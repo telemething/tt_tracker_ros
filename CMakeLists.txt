@@ -46,6 +46,7 @@ find_package(catkin REQUIRED
     std_msgs
     actionlib
     darknet_ros_msgs
+    tt_tracker_ros_msgs
     image_transport
 )
 ##   * add "message_runtime" and every package in MSG_DEP_SET to

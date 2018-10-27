@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <thread>
 #include <chrono>
+#include <sstream>
 
 #include <boost/interprocess/sync/interprocess_semaphore.hpp>
 
@@ -23,6 +24,7 @@
 #include <ros/ros.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Int8.h>
+#include <std_msgs/String.h>
 #include <actionlib/server/simple_action_server.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/Image.h>
@@ -45,6 +47,11 @@
 //#include <darknet_ros_msgs/BoundingBoxes.h>
 //#include <darknet_ros_msgs/BoundingBox.h>
 //#include <darknet_ros_msgs/CheckForObjectsAction.h>
+
+// tt_tracker_ros_msgs
+#include <tt_tracker_ros_msgs/BoundingBoxes.h>
+#include <tt_tracker_ros_msgs/BoundingBox.h>
+#include <tt_tracker_ros_msgs/CheckForObjectsAction.h>
 
 // Darknet.
 //#ifdef GPU
@@ -71,16 +78,20 @@ class tt_tracker
 {
  public:
 
-  //! ROS node handle.
+  // ROS node handle.
   ros::NodeHandle nodeHandle_;
 
-  //! Advertise and subscribe to image topics.
+  // Advertise and subscribe to image topics.
   image_transport::ImageTransport imageTransport_;
 
-    //! ROS subscribers 
+  // ROS subscribers 
   image_transport::Subscriber imageSubscriber_;
 
   ros::Subscriber darknetBoundingBoxesSubscriber_;
+
+  // ROS Publishers
+  ros::Publisher chatter_pub_;
+  ros::Publisher boundingBoxesPublisher_;
 
   std::string DisplayWindowName_ = "TT Tracker";
 
@@ -124,12 +135,19 @@ class tt_tracker
   explicit tt_tracker(ros::NodeHandle nh);
   ~tt_tracker();
 
+  struct releativeCoordsStruct
+  {
+    double hPercent;
+    double wPercent;
+  };
+
   bool readParameters();
   int trackloop();
   //int searchloop();
   int displayloop();
   void init();
   int initTracker();
+  releativeCoordsStruct findPositionRelativeToImageCenter(const cv::Rect objectRect, const int inageSizeH, const int imageSizeW);
   void startSearchingForObject(const std::string className);
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
   void darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBoxes& bboxMessage);

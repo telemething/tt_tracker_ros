@@ -110,6 +110,9 @@ void tt_tracker::init()
   std::string darknetBoundingBoxesName;
   int cameraQueueSize;  
   int darknetBoundingBoxesQueueSize;
+  std::string boundingBoxesTopicName;
+  int boundingBoxesQueueSize;
+  bool boundingBoxesLatch;
 
   // Read Config
   nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
@@ -121,14 +124,28 @@ void tt_tracker::init()
   nodeHandle_.param("subscribers/camera_reading/queue_size", cameraQueueSize, 1);  
   nodeHandle_.param("darknet_ros/bounding_boxes/queue_size", darknetBoundingBoxesQueueSize, 1);
 
+
+  nodeHandle_.param("publishers/bounding_boxes/topic", boundingBoxesTopicName,
+                    std::string("tt_bounding_boxes"));
+  nodeHandle_.param("publishers/bounding_boxes/queue_size", boundingBoxesQueueSize, 1);
+  nodeHandle_.param("publishers/bounding_boxes/latch", boundingBoxesLatch, false);
+
   //cv::namedWindow(DisplayWindowName_);
 
   // Subscribe
+
   imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
                                                &tt_tracker::cameraCallback, this);
 
   darknetBoundingBoxesSubscriber_ = nodeHandle_.subscribe(darknetBoundingBoxesName, darknetBoundingBoxesQueueSize,
                                                &tt_tracker::darknetBoundingBoxesCallback, this);
+
+  // Publish
+
+  chatter_pub_ = nodeHandle_.advertise<std_msgs::String>("chatter", 1000);
+
+  boundingBoxesPublisher_ = nodeHandle_.advertise<tt_tracker_ros_msgs::BoundingBoxes>(
+      boundingBoxesTopicName, boundingBoxesQueueSize, boundingBoxesLatch);
 
   // Start threads                                             
   trackloop_thread = std::thread(&tt_tracker::trackloop, this); 
@@ -412,10 +429,36 @@ int tt_tracker::trackloop()
 //*
 //******************************************************************************
 
+tt_tracker::releativeCoordsStruct tt_tracker::findPositionRelativeToImageCenter(
+  const cv::Rect objectRect, const int imageSizeH, const int imageSizeW)
+{
+  releativeCoordsStruct releativeCoords;
+  releativeCoords.hPercent = 0;
+  releativeCoords.wPercent = 0;
+
+  cv::Point objectCOM = (objectRect.br() + objectRect.tl())*0.5;
+
+  double dX = (double)objectCOM.x - (double)imageSizeW / 2;
+  double dY = (double)objectCOM.y - (double)imageSizeH / 2;
+
+  releativeCoords.hPercent = dY / imageSizeH;
+  releativeCoords.wPercent = dX / imageSizeW;
+
+  return releativeCoords;
+}
+
+
+//*****************************************************************************
+//*
+//*
+//*
+//******************************************************************************
+
 int tt_tracker::displayloop()
 { 
     cv::namedWindow(DisplayWindowName_);
-
+    int count = 0;
+    tt_tracker::releativeCoordsStruct releativeCoords;
 
     while(true)
     {     
@@ -470,6 +513,27 @@ int tt_tracker::displayloop()
           {
               // Tracking success : Draw the tracked object
               rectangle(out_image_, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 );
+
+              releativeCoords = findPositionRelativeToImageCenter(trackingBox_, frameHeight_, frameWidth_ );
+
+              tt_tracker_ros_msgs::BoundingBoxes boundingBoxesResults_;
+              tt_tracker_ros_msgs::BoundingBox boundingBox;
+
+              boundingBox.Class = searchForClassName_;
+              boundingBox.probability = foundObjcetClassProbability;
+              boundingBox.xmin = trackingBox_.x;
+              boundingBox.ymin = trackingBox_.y;
+              boundingBox.xmax = trackingBox_.width;
+              boundingBox.ymax = trackingBox_.height;
+
+              boundingBox.coordsPercentH = releativeCoords.hPercent;
+              boundingBox.coordsPercentW = releativeCoords.wPercent;
+
+              boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
+
+              boundingBoxesResults_.header.stamp = ros::Time::now();
+              boundingBoxesResults_.header.frame_id = "tracking";
+              boundingBoxesPublisher_.publish(boundingBoxesResults_);
           }
           else
           {
@@ -486,6 +550,22 @@ int tt_tracker::displayloop()
         break;
       }
 
+      //***********************************************
+
+      /*std_msgs::String msg;
+
+      std::stringstream ss;
+      ss << "hello world " << count;
+      msg.data = ss.str();
+
+      ROS_INFO("%s", msg.data.c_str());
+
+      chatter_pub_.publish(msg);
+
+      ++count;*/
+
+      //***********************************************
+
       // Display frame.
       cv::imshow("Tracking", out_image_);
           
@@ -498,41 +578,4 @@ int tt_tracker::displayloop()
       }
     }
 }
-
-
-//*****************************************************************************
-//*
-//*
-//*
-//******************************************************************************
-
-/*int tt_tracker::searchloop()
-{    
-    while(true)
-    {     
-      //cam_image_ready_.wait();
-      //cv::Mat frame = cam_image_->image;
-
-      switch(searcherMode_)
-      {
-        case startSearching:
-
-        break;
-
-        case searching:
-
-          //when found
-          trackThisBox_.x = 0;
-          trackThisBox_.y = 0;
-          trackThisBox_.width = 0;
-          trackThisBox_.height = 0;
-
-          searcherMode_ = found;
-          trackerMode_ = startTracking;
-
-        break;
-      }
-    }
-}*/
-
 }
