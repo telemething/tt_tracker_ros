@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "",
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "includePath": [
+                "/Data/catkin-ws/devel/include",
+                "/home/mark/ros_catkin_contrib_ws/devel/include",
+                "/home/mark/ros_catkin_ws/install_isolated/include",
+                "/Data/catkin-ws/src/publishAirsimImgs/include",
+                "/Data/catkin-ws/src/dji_sdk_dji2mav/include",
+                "/Data/catkin-ws/src/flir_boson_usb/include",
+                "/Data/catkin-ws/src/gscam/include",
+                "/Data/catkin-ws/src/mav2dji/include",
+                "/Data/catkin-ws/src/tt_gimbal/include",
+                "/Data/catkin-ws/src/tt_gimbal_airsim/include",
+                "/Data/catkin-ws/src/tt_gimbal_dji_ros/include",
+                "/Data/catkin-ws/src/tt_mission_master/include",
+                "/Data/catkin-ws/src/tt_tracker_ros/include",
+                "/usr/include"
+            ],
+            "name": "Linux",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}

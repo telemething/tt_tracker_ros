@@ -8,6 +8,7 @@
 
  // yolo object detector
 #include "tt_tracker_ros/tt_tracker.hpp"
+#include <boost/format.hpp>
 
 // Convert to string
 #define SSTR( x ) static_cast< std::ostringstream & >( \
@@ -45,7 +46,7 @@ tt_tracker::tt_tracker(ros::NodeHandle nh) :
 
   init();
 
-  startSearchingForObject("bottle");
+  startSearchingForObject("person");
 }
 
 //*****************************************************************************
@@ -108,15 +109,32 @@ void tt_tracker::init()
   // Initialize publisher and subscriber.
   std::string cameraTopicName;
   std::string darknetBoundingBoxesName;
+  std::string gimbalAngleSubscriberTopicName;
   int cameraQueueSize;  
   int darknetBoundingBoxesQueueSize;
-  std::string boundingBoxesTopicName;
-  int boundingBoxesQueueSize;
-  bool boundingBoxesLatch;
+
+  std::string trackBoxesTopicName;
+  int trackBoxesQueueSize;
+  bool trackBoxesLatch;
+
+  std::string currentTrackModeTopicName;
+  int currentTrackModeQueueSize;
+  bool currentTrackModeLatch;
+
+  gimbalAngle_.vector.y = 0;
+  gimbalAngle_.vector.x = 0;
+  gimbalAngle_.vector.z = 0;
+  haveValidGimbalAngle_ = false;
 
   // Read Config
+  //nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
+  //                  std::string("/camera/image_raw"));
+                    
+  //nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
+  //                  std::string("/airsim/image_raw"));
+                    
   nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
-                    std::string("/camera/image_raw"));
+                    std::string("/darknet_ros/detection_image"));
                     
   nodeHandle_.param("darknet_ros/bounding_boxes/topic", darknetBoundingBoxesName,
                     std::string("/darknet_ros/bounding_boxes"));
@@ -124,32 +142,59 @@ void tt_tracker::init()
   nodeHandle_.param("subscribers/camera_reading/queue_size", cameraQueueSize, 1);  
   nodeHandle_.param("darknet_ros/bounding_boxes/queue_size", darknetBoundingBoxesQueueSize, 1);
 
+  nodeHandle_.param("subscribers/gimbalAngleRecvd/topic", gimbalAngleSubscriberTopicName,
+                    std::string("/tt_gimbal/gimbal_angle_recvd"));
 
-  nodeHandle_.param("publishers/bounding_boxes/topic", boundingBoxesTopicName,
-                    std::string("tt_bounding_boxes"));
-  nodeHandle_.param("publishers/bounding_boxes/queue_size", boundingBoxesQueueSize, 1);
-  nodeHandle_.param("publishers/bounding_boxes/latch", boundingBoxesLatch, false);
+
+  nodeHandle_.param("publishers/track_boxes/topic", trackBoxesTopicName,
+                    std::string("track_boxes"));
+  nodeHandle_.param("publishers/track_boxes/queue_size", trackBoxesQueueSize, 1);
+  nodeHandle_.param("publishers/track_boxes/latch", trackBoxesLatch, false);
+
+  nodeHandle_.param("publishers/current_track_mode/topic", currentTrackModeTopicName,
+                    std::string("current_track_mode"));
+  nodeHandle_.param("publishers/current_track_mode/queue_size", currentTrackModeQueueSize, 1);
+  nodeHandle_.param("publishers/current_track_mode/latch", currentTrackModeLatch, false);
+
+  nodeHandle_.param("minimumObjectIdConfidencePercent", minimumObjectIdConfidencePercent,
+                    float(60.0));
+
+  minimumObjectIdConfidencePercent /= 100;
 
   //cv::namedWindow(DisplayWindowName_);
+
+  printf("\r\ncameraTopicName: %s\n", cameraTopicName.c_str());
+  printf("\r\ndarknetBoundingBoxesName: %s\n", darknetBoundingBoxesName.c_str());
+  printf("\r\ntrackBoxesTopicName: %s\n", trackBoxesTopicName.c_str());
+  printf("\r\ncurrentTrackModeTopicName: %s\n", currentTrackModeTopicName.c_str());
 
   // Subscribe
 
   imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
                                                &tt_tracker::cameraCallback, this);
 
-  darknetBoundingBoxesSubscriber_ = nodeHandle_.subscribe(darknetBoundingBoxesName, darknetBoundingBoxesQueueSize,
-                                               &tt_tracker::darknetBoundingBoxesCallback, this);
+  darknetBoundingBoxesSubscriber_ = 
+    nodeHandle_.subscribe(darknetBoundingBoxesName, darknetBoundingBoxesQueueSize,
+      &tt_tracker::darknetBoundingBoxesCallback, this);
+
+  gimbalAngleSubscriber_ = nodeHandle_.subscribe<geometry_msgs::Vector3Stamped>
+    (gimbalAngleSubscriberTopicName, 10, &tt_tracker::gimbalAngleCallback, this);
 
   // Publish
 
-  chatter_pub_ = nodeHandle_.advertise<std_msgs::String>("chatter", 1000);
+  //chatter_pub_ = nodeHandle_.advertise<std_msgs::String>("chatter", 1000);
 
-  boundingBoxesPublisher_ = nodeHandle_.advertise<tt_tracker_ros_msgs::BoundingBoxes>(
-      boundingBoxesTopicName, boundingBoxesQueueSize, boundingBoxesLatch);
+  TrackBoxesPublisher_ = nodeHandle_.advertise<tt_tracker_ros_msgs::TrackBoxes>(
+      trackBoxesTopicName, trackBoxesQueueSize, trackBoxesLatch);
+
+  // string modeName
+  // float64 trackSubjectClassName
+  CurrentTackModePublisher_ = nodeHandle_.advertise<tt_tracker_ros_msgs::CurrentTrackMode>(
+      currentTrackModeTopicName, currentTrackModeQueueSize, false);
 
   // Start threads                                             
   trackloop_thread = std::thread(&tt_tracker::trackloop, this); 
-  //searchloop_thread = std::thread(&tt_tracker::searchloop, this); 
+  publishTrackingModeloop_thread = std::thread(&tt_tracker::publishTrackingModeloop, this); 
   displayloop_thread = std::thread(&tt_tracker::displayloop, this);  
 }
 
@@ -164,6 +209,18 @@ void tt_tracker::startSearchingForObject(const std::string className)
   trackerMode_ = stopTracking;
   searchForClassName_ = className;
   searcherMode_ = searching;
+}
+
+//*****************************************************************************
+//*
+//*
+//*
+//******************************************************************************
+
+void tt_tracker::gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg)
+{
+  gimbalAngle_ = *msg;
+  haveValidGimbalAngle_ = true;
 }
 
 //*****************************************************************************
@@ -319,6 +376,67 @@ int tt_tracker::initTracker()
     #endif
 }
 
+//*****************************************************************************
+//*
+//*
+//*
+//******************************************************************************
+
+int tt_tracker::publishTrackingModeloop()
+{ 
+    while(true)
+    {         
+      //lock ?
+      //boost::shared_lock<boost::shared_mutex> lock(mutexInputRawImage_);
+
+      std::this_thread::sleep_for(std::chrono::seconds(publishTrackingModeloopTimeoutSeconds_));
+
+      currentTrackModeMessage_.trackSubjectClassName = searchForClassName_;
+
+      switch(searcherMode_)
+      {
+        case searchUninit:
+          currentTrackModeMessage_.modeName = "Idle"; 
+        break;        
+        
+        case startSearching:
+          currentTrackModeMessage_.modeName = "Searching"; 
+        break;        
+        
+        case searching:
+          currentTrackModeMessage_.modeName = "Searching"; 
+        break;        
+
+        case found:
+          switch(trackerMode_)
+          {
+            case trackUninit:
+              currentTrackModeMessage_.modeName = "Idle";       
+            break;
+
+            case startTracking:
+              currentTrackModeMessage_.modeName = "Tracking";
+            break;
+
+            case tracking:
+              currentTrackModeMessage_.modeName = "Tracking";
+            break;
+
+            case stopTracking:
+              currentTrackModeMessage_.modeName = "Idle";
+            break;
+
+            case resetTracker:
+              currentTrackModeMessage_.modeName = "Reseting";
+            break;
+          }
+
+        break;
+      }
+
+      CurrentTackModePublisher_.publish(currentTrackModeMessage_);
+    }
+}
 
 //*****************************************************************************
 //*
@@ -328,7 +446,7 @@ int tt_tracker::initTracker()
 
 int tt_tracker::trackloop()
 { 
-    double trackingFailureTimeoutTicks = cv::getTickFrequency() * trackingFailureTimeoutSeconds;
+    double trackingFailureTimeoutTicks = cv::getTickFrequency() * trackingFailureTimeoutSeconds_;
     double timer;
 
     while(true)
@@ -438,7 +556,7 @@ tt_tracker::releativeCoordsStruct tt_tracker::findPositionRelativeToImageCenter(
 
   cv::Point objectCOM = (objectRect.br() + objectRect.tl())*0.5;
 
-  double dX = (double)objectCOM.x - (double)imageSizeW / 2;
+  double dX = -((double)objectCOM.x - (double)imageSizeW / 2);
   double dY = (double)objectCOM.y - (double)imageSizeH / 2;
 
   releativeCoords.hPercent = dY / imageSizeH;
@@ -459,6 +577,8 @@ int tt_tracker::displayloop()
     cv::namedWindow(DisplayWindowName_);
     int count = 0;
     tt_tracker::releativeCoordsStruct releativeCoords;
+    cv::Point objectCOM;
+    cv::Point IamgeCOM(frameWidth_/2,frameHeight_/2);
 
     while(true)
     {     
@@ -478,7 +598,22 @@ int tt_tracker::displayloop()
       switch(searcherMode_)
       {
         case searching:
-          putText(out_image_, "Searching for: " + searchForClassName_ , cv::Point(100,20), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+          //putText(out_image_, "Searching for: " + searchForClassName_ , cv::Point(50,20), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+
+          // Display tracker type on frame
+          putText(out_image_, 
+            str(boost::format("Searching for: %s") % searchForClassName_ ), 
+            cv::Point(30,20), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+          
+          // Display gimbal orientation on frame
+          if(haveValidGimbalAngle_)
+            putText(out_image_, 
+              str(boost::format("Gimbal p: %.1f r: %.1f y: %.1f") % gimbalAngle_.vector.y % gimbalAngle_.vector.x % gimbalAngle_.vector.z), 
+              cv::Point(30,50), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+          else
+            putText(out_image_, "Gimbal : Unavailable",
+              cv::Point(30,50), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+
         break;
 
         case searchUninit:
@@ -500,6 +635,9 @@ int tt_tracker::displayloop()
         continue;
       }
       */
+
+      objectCOM.x = 0;
+      objectCOM.y = 0;
       
       switch(trackerMode_)
       {
@@ -514,39 +652,63 @@ int tt_tracker::displayloop()
               // Tracking success : Draw the tracked object
               rectangle(out_image_, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 );
 
+              // Draw delta line
+              
+              objectCOM = (trackingBox_.br() + trackingBox_.tl())*0.5;
+              line(out_image_, IamgeCOM, objectCOM, cv::Scalar( 0, 0, 255 ), 2, 1 );
+              circle(out_image_, IamgeCOM, 10, cv::Scalar( 0, 0, 255 ), 2, 1 );
+
               releativeCoords = findPositionRelativeToImageCenter(trackingBox_, frameHeight_, frameWidth_ );
 
-              tt_tracker_ros_msgs::BoundingBoxes boundingBoxesResults_;
-              tt_tracker_ros_msgs::BoundingBox boundingBox;
+              tt_tracker_ros_msgs::TrackBoxes TrackBoxesResults_;
+              tt_tracker_ros_msgs::TrackBox TrackBox;
 
-              boundingBox.Class = searchForClassName_;
-              boundingBox.probability = foundObjcetClassProbability;
-              boundingBox.xmin = trackingBox_.x;
-              boundingBox.ymin = trackingBox_.y;
-              boundingBox.xmax = trackingBox_.width;
-              boundingBox.ymax = trackingBox_.height;
+              TrackBox.Class = searchForClassName_;
+              TrackBox.probability = foundObjcetClassProbability;
+              TrackBox.xmin = trackingBox_.x;
+              TrackBox.ymin = trackingBox_.y;
+              TrackBox.xmax = trackingBox_.width;
+              TrackBox.ymax = trackingBox_.height;
 
-              boundingBox.coordsPercentH = releativeCoords.hPercent;
-              boundingBox.coordsPercentW = releativeCoords.wPercent;
+              TrackBox.coordsPercentH = releativeCoords.hPercent;
+              TrackBox.coordsPercentW = releativeCoords.wPercent;
 
-              boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
-
-              boundingBoxesResults_.header.stamp = ros::Time::now();
-              boundingBoxesResults_.header.frame_id = "tracking";
-              boundingBoxesPublisher_.publish(boundingBoxesResults_);
+              TrackBox.action = "TrackThis";
+              TrackBoxesResults_.header.stamp = ros::Time::now();
+              TrackBoxesResults_.header.frame_id = "tracking";
+              
+              TrackBoxesResults_.track_boxes.push_back(TrackBox);
+              TrackBoxesPublisher_.publish(TrackBoxesResults_);
           }
           else
           {
               // Tracking failure detected.
-              putText(out_image_, "Tracking failure detected", cv::Point(100,80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0,0,255),2);
+              putText(out_image_, "Tracking failure detected", 
+                cv::Point(100,80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0,0,255),2);
           }
-          
+
           // Display tracker type on frame
-          putText(out_image_, trackerType_ + " Tracker", cv::Point(100,20), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+          putText(out_image_, 
+            str(boost::format("%s : %s(%s) %.2f%% : %s") 
+              % trackerType_ % currentTrackModeMessage_.modeName % searchForClassName_ 
+              % foundObjcetClassProbability % SSTR(int(trackPerfFps))), 
+            cv::Point(30,20), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
           
-          // Display FPS on frame
-          putText(out_image_, "FPS : " + SSTR(int(trackPerfFps)), cv::Point(100,50), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50), 2);
-  
+          // Display offset on frame
+          putText(out_image_, 
+            str(boost::format("w: %.3f h: %.3f") % releativeCoords.wPercent % releativeCoords.hPercent), 
+            cv::Point(30,50), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+
+          // Display gimbal orientation on frame
+          if(haveValidGimbalAngle_)
+          putText(out_image_, 
+            str(boost::format("Gimbal p: %.1f r: %.1f y: %.1f") 
+              % gimbalAngle_.vector.y % gimbalAngle_.vector.x % gimbalAngle_.vector.z), 
+            cv::Point(30,80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+          else
+            putText(out_image_, "Gimbal : Unavailable",
+              cv::Point(30,80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(50,170,50),2);
+           
         break;
       }
 
@@ -567,7 +729,7 @@ int tt_tracker::displayloop()
       //***********************************************
 
       // Display frame.
-      cv::imshow("Tracking", out_image_);
+      cv::imshow(DisplayWindowName_, out_image_);
           
       // Exit if ESC pressed.
       int k = cv::waitKey(1);

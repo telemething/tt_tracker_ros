@@ -2,7 +2,7 @@
  * tt_tracker_ros_node.cpp
  *
  *  Created on: 1.1.1
- *      Author: Markn West
+ *      Author: Mark West
  *   
  */
 

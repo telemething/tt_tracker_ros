@@ -29,6 +29,7 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/Image.h>
 #include <geometry_msgs/Point.h>
+#include <geometry_msgs/Vector3Stamped.h>
 #include <image_transport/image_transport.h>
 
 // OpenCv
@@ -49,8 +50,9 @@
 //#include <darknet_ros_msgs/CheckForObjectsAction.h>
 
 // tt_tracker_ros_msgs
-#include <tt_tracker_ros_msgs/BoundingBoxes.h>
-#include <tt_tracker_ros_msgs/BoundingBox.h>
+#include <tt_tracker_ros_msgs/TrackBoxes.h>
+#include <tt_tracker_ros_msgs/TrackBox.h>
+#include <tt_tracker_ros_msgs/CurrentTrackMode.h>
 #include <tt_tracker_ros_msgs/CheckForObjectsAction.h>
 
 // Darknet.
@@ -86,12 +88,13 @@ class tt_tracker
 
   // ROS subscribers 
   image_transport::Subscriber imageSubscriber_;
-
   ros::Subscriber darknetBoundingBoxesSubscriber_;
+  ros::Subscriber gimbalAngleSubscriber_;
 
   // ROS Publishers
-  ros::Publisher chatter_pub_;
-  ros::Publisher boundingBoxesPublisher_;
+  //ros::Publisher chatter_pub_;
+  ros::Publisher TrackBoxesPublisher_;
+  ros::Publisher CurrentTackModePublisher_;
 
   std::string DisplayWindowName_ = "TT Tracker";
 
@@ -118,7 +121,7 @@ class tt_tracker
   searcherModeEnum searcherMode_ = searchUninit;
 
   std::thread trackloop_thread; 
-  std::thread searchloop_thread;
+  std::thread publishTrackingModeloop_thread;
   std::thread displayloop_thread;
 
   float trackPerfFps;
@@ -127,10 +130,14 @@ class tt_tracker
   int frameWidth_;
   int frameHeight_;
   bool imageStatus_ = false;
+  bool haveValidGimbalAngle_ = false;
   double lastGoodTrackTickCount_;
-  int trackingFailureTimeoutSeconds = 5;
+  int trackingFailureTimeoutSeconds_ = 5;
+  int publishTrackingModeloopTimeoutSeconds_ = 1;
+  geometry_msgs::Vector3Stamped gimbalAngle_;
+  float minimumObjectIdConfidencePercent;
 
-  //boost::interprocess::interprocess_semaphore cam_image_ready_(0);
+  tt_tracker_ros_msgs::CurrentTrackMode currentTrackModeMessage_;
 
   explicit tt_tracker(ros::NodeHandle nh);
   ~tt_tracker();
@@ -143,7 +150,7 @@ class tt_tracker
 
   bool readParameters();
   int trackloop();
-  //int searchloop();
+  int publishTrackingModeloop();
   int displayloop();
   void init();
   int initTracker();
@@ -151,6 +158,7 @@ class tt_tracker
   void startSearchingForObject(const std::string className);
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
   void darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBoxes& bboxMessage);
+  void gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg);
 };
 
 } /* namespace darknet_ros*/

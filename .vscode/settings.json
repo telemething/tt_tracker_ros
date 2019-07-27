@@ -1,0 +1,7 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/Data/catkin-ws/devel/lib/python2.7/dist-packages",
+        "/home/mark/ros_catkin_contrib_ws/devel/lib/python2.7/dist-packages",
+        "/home/mark/ros_catkin_ws/install_isolated/lib/python2.7/dist-packages"
+    ]
+}
