@@ -75,6 +75,25 @@
 
 namespace tt_tracker_ros 
 {
+// List of tracker algorithms in OpenCV 3.4.1
+enum trackerAlgEnum {algUninit, BOOSTING, MIL, KCF, TLD,MEDIANFLOW, GOTURN, MOSSE, CSRT};
+enum trackerModeEnum {trackUninit, startTracking, tracking, stopTracking, resetTracker};
+enum searcherModeEnum {searchUninit, startSearching, searching, found};
+
+class TrackerEngine
+{
+ public:
+
+  cv::Ptr<cv::Tracker> tracker;
+  cv::Rect2d trackingBox;
+  bool isOK = true;
+  std::string name  = "-";
+
+  trackerModeEnum trackerMode_ = trackerModeEnum::trackUninit;
+  searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
+  trackerAlgEnum trackerAlg = trackerAlgEnum::algUninit;
+};
+
 
 class tt_tracker
 {
@@ -100,7 +119,9 @@ class tt_tracker
 
   std::string trackerType_;
   std::string searchForClassName_ = "";
-  cv::Ptr<cv::Tracker> tracker_;
+  //cv::Ptr<cv::Tracker> tracker_;
+  //std::vector<cv::Ptr<cv::Tracker>> trackers_;
+  std::vector<TrackerEngine> trackerEngines_;
   cv_bridge::CvImagePtr in_raw_image_;
   cv::Mat out_image_;
   
@@ -112,13 +133,12 @@ class tt_tracker
   boost::shared_mutex mutexDarknetBoundingBoxesCallback_;
   boost::shared_mutex mutexImageStatus_;
 
-  cv::Rect2d trackingBox_;
+  //cv::Rect2d trackingBox_;
   cv::Rect2d trackThisBox_;
 
-  enum trackerModeEnum {trackUninit, startTracking, tracking, stopTracking, resetTracker};
-  enum searcherModeEnum {searchUninit, startSearching, searching, found};
-  trackerModeEnum trackerMode_ = trackUninit;
-  searcherModeEnum searcherMode_ = searchUninit;
+  //trackerModeEnum trackerMode_ = trackUninit;
+  trackerModeEnum aggregateTrackingMode_ = trackerModeEnum::trackUninit;
+  searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
 
   std::thread trackloop_thread; 
   std::thread publishTrackingModeloop_thread;
@@ -132,7 +152,7 @@ class tt_tracker
   bool imageStatus_ = false;
   bool haveValidGimbalAngle_ = false;
   double lastGoodTrackTickCount_;
-  int trackingFailureTimeoutSeconds_ = 5;
+  int trackingFailureTimeoutSeconds_ = 1;
   int publishTrackingModeloopTimeoutSeconds_ = 1;
   geometry_msgs::Vector3Stamped gimbalAngle_;
   float minimumObjectIdConfidencePercent;
@@ -153,7 +173,7 @@ class tt_tracker
   int publishTrackingModeloop();
   int displayloop();
   void init();
-  int initTracker();
+  int addTracker(trackerAlgEnum trackerAlg, std::string name);
   releativeCoordsStruct findPositionRelativeToImageCenter(const cv::Rect objectRect, const int inageSizeH, const int imageSizeW);
   void startSearchingForObject(const std::string className);
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);

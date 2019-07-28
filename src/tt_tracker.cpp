@@ -104,7 +104,7 @@ void tt_tracker::init()
 {
   ROS_INFO("[tt_tracker] init().");
 
-  initTracker();
+  addTracker(trackerAlgEnum::MIL, "MIL");
 
   // Initialize publisher and subscriber.
   std::string cameraTopicName;
@@ -206,9 +206,13 @@ void tt_tracker::init()
 
 void tt_tracker::startSearchingForObject(const std::string className)
 {
-  trackerMode_ = stopTracking;
+  //trackerMode_ = stopTracking;
+
+  for( auto &trackerEngine : trackerEngines_)
+    trackerEngine.trackerMode_ = trackerModeEnum::stopTracking;
+
   searchForClassName_ = className;
-  searcherMode_ = searching;
+  searcherMode_ = searcherModeEnum::searching;
 }
 
 //*****************************************************************************
@@ -269,7 +273,17 @@ void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBo
         trackThisBox_.height = bbox[index].ymax - bbox[index].ymin;
 
         searcherMode_ = found;
-        trackerMode_ = startTracking;
+
+        //trackerMode_ = startTracking;
+
+        //for each tracker engine
+        for( auto &trackerEngine : trackerEngines_)
+        {
+          //if it is not tracking, then start tracking
+          //if(trackerEngine.trackerMode_ != trackerModeEnum::tracking)
+            trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
+        }
+
         return;
       }
     }  
@@ -336,44 +350,60 @@ void tt_tracker::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
 //*
 //*
 //*
-//******************************************************************************
+//*****************************************************************************
 
-int tt_tracker::initTracker()
+int tt_tracker::addTracker(trackerAlgEnum trackerAlg, std::string name)
 {
-    // List of tracker types in OpenCV 3.4.1
-    std::string trackerTypes[8] = {"BOOSTING", "MIL", "KCF", "TLD","MEDIANFLOW", "GOTURN", "MOSSE", "CSRT"};
-    // vector <string> trackerTypes(types, std::end(types));
+  TrackerEngine trackerEngine;
+  bool foundTrackerEngine = false;
 
-    if(NULL != tracker_)
-      tracker_.release();
- 
-    // Create a tracker
-    trackerType_ = trackerTypes[2];
- 
-    #if (CV_MINOR_VERSION < 3)
+  // for now we only want one tracker of each algorithm
+  // so if we find one then we use it. We release the
+  // existing cv tracker because we want a new one
+  for( auto &tEngine : trackerEngines_)
+    if(tEngine.trackerAlg == trackerAlg)
     {
-        tracker_ = Tracker::create(trackerType_);
+      foundTrackerEngine = true;
+      trackerEngine.tracker.release();
+      trackerEngine = tEngine;
     }
-    #else
-    {
-        if (trackerType_ == "BOOSTING")
-            tracker_ = cv::TrackerBoosting::create();
-        if (trackerType_ == "MIL")
-            tracker_ = cv::TrackerMIL::create();
-        if (trackerType_ == "KCF")
-            tracker_ = cv::TrackerKCF::create();
-        if (trackerType_ == "TLD")
-            tracker_ = cv::TrackerTLD::create();
-        if (trackerType_ == "MEDIANFLOW")
-            tracker_ = cv::TrackerMedianFlow::create();
-        if (trackerType_ == "GOTURN")
-            tracker_ = cv::TrackerGOTURN::create();
-        if (trackerType_ == "MOSSE")
-            tracker_ = cv::TrackerMOSSE::create();
-        if (trackerType_ == "CSRT")
-            tracker_ = cv::TrackerCSRT::create();
-    }
-    #endif
+
+  trackerEngine.isOK = true;
+  trackerEngine.name = name;
+  trackerEngine.searcherMode_ = searcherModeEnum::searchUninit;
+  trackerEngine.trackerMode_  = trackerModeEnum::trackUninit;
+  trackerEngine.trackerAlg = trackerAlg;
+ 
+  switch(trackerAlg)
+  {
+    case BOOSTING:
+      trackerEngine.tracker = cv::TrackerBoosting::create();
+      break;
+    case MIL:
+      trackerEngine.tracker = cv::TrackerMIL::create();
+       break;
+    case KCF:
+       trackerEngine.tracker = cv::TrackerKCF::create();
+       break;
+    case TLD:
+       trackerEngine.tracker = cv::TrackerTLD::create();
+       break;
+    case MEDIANFLOW:
+       trackerEngine.tracker = cv::TrackerMedianFlow::create();
+       break;
+    case GOTURN:
+       trackerEngine.tracker = cv::TrackerGOTURN::create();
+       break;
+    case MOSSE:
+       trackerEngine.tracker = cv::TrackerMOSSE::create();
+       break;
+    case CSRT:
+       trackerEngine.tracker = cv::TrackerCSRT::create();
+       break;
+  }
+
+  if(!foundTrackerEngine)
+    trackerEngines_.push_back(trackerEngine);
 }
 
 //*****************************************************************************
@@ -408,7 +438,7 @@ int tt_tracker::publishTrackingModeloop()
         break;        
 
         case found:
-          switch(trackerMode_)
+          switch(aggregateTrackingMode_)
           {
             case trackUninit:
               currentTrackModeMessage_.modeName = "Idle";       
@@ -475,17 +505,37 @@ int tt_tracker::trackloop()
         ROS_ERROR("exception");
         continue;
       }
+
+      cv::Rect2d beforeBox;
       
-      switch(trackerMode_)
+      for( auto &trackerEngine : trackerEngines_)
+      {
+      switch(trackerEngine.trackerMode_)
       {
         case tracking:
 
           // Start timer
           timer = (double)cv::getTickCount();
           
+          //trackerOk = tracker_->update(in_raw_image_->image, trackingBox_);
+
           // Update the tracking result
-          trackerOk = tracker_->update(in_raw_image_->image, trackingBox_);
-          
+          //for( auto &trackerEngine : trackerEngines_)
+          //{
+            // TODO : make this work with multiple trackers
+
+          beforeBox.x = trackerEngine.trackingBox.x;
+          beforeBox.y = trackerEngine.trackingBox.y;
+          beforeBox.height = trackerEngine.trackingBox.height;
+          beforeBox.width = trackerEngine.trackingBox.width;
+
+
+            trackerEngine.isOK = trackerEngine.tracker->update(in_raw_image_->image, trackerEngine.trackingBox);
+
+            //todo: just fake for now
+            trackerOk = trackerEngine.isOK;
+          //}
+
           // Calculate Frames per second (FPS)
           trackPerfFps = cv::getTickFrequency() / ((double)cv::getTickCount() - timer);
 
@@ -499,7 +549,7 @@ int tt_tracker::trackloop()
             // If we have lost tack for x amount of time then re initiate search mode
             if( (cv::getTickCount() - lastGoodTrackTickCount_) > trackingFailureTimeoutTicks )
             {
-              trackerMode_ = resetTracker;  
+              trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;  
             }
           }
             
@@ -507,29 +557,58 @@ int tt_tracker::trackloop()
 
         case startTracking:
 
-          trackingBox_.x = trackThisBox_.x;
-          trackingBox_.y = trackThisBox_.y;
-          trackingBox_.width = trackThisBox_.width;
-          trackingBox_.height = trackThisBox_.height;
+          //trackingBox_.x = trackThisBox_.x;
+          //trackingBox_.y = trackThisBox_.y;
+          //trackingBox_.width = trackThisBox_.width;
+          //trackingBox_.height = trackThisBox_.height;
    
-          tracker_->init(in_raw_image_->image, trackingBox_);
+          //tracker_->init(in_raw_image_->image, trackingBox_);
+
+          //for( auto &trackerEngine : trackerEngines_)
+          //{
+            trackerEngine.trackingBox.x = trackThisBox_.x;
+            trackerEngine.trackingBox.y = trackThisBox_.y;
+            trackerEngine.trackingBox.width = trackThisBox_.width;
+            trackerEngine.trackingBox.height = trackThisBox_.height;
+
+            // TODO : make this work with multiple trackers
+            // TODO : allow dynamic add/remove of trackers
+            trackerEngine.isOK = trackerEngine.tracker->init(in_raw_image_->image, trackerEngine.trackingBox);
+            trackerEngine.trackerMode_ = trackerModeEnum::tracking;
+          //}
 
           // Display bounding box. 
           //cv::rectangle(in_raw_image_->image, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 ); 
           //cv::imshow(DisplayWindowName_, in_raw_image_->image); 
 
-          trackerMode_ = tracking;
+          //trackerMode_ = tracking;
 
         break;
 
         case resetTracker:
 
-          initTracker();
+          //maybe we shouldn't reinit
+          addTracker(trackerEngine.trackerAlg, trackerEngine.name);
           searcherMode_ = searching;
 
         break;
       }
+      }
 
+      //is anybody tracking? Other threads are running, so dont use 
+      //aggregateTrackingMode_ as a temp. Only change it once as needed.
+      bool somebodyIsTracking = false;
+
+      for( auto &trackerEngine : trackerEngines_)
+        if(trackerEngine.trackerMode_ == trackerModeEnum::tracking)
+          somebodyIsTracking = true;
+
+      if(somebodyIsTracking)
+        aggregateTrackingMode_ = trackerModeEnum::tracking;
+      else
+        aggregateTrackingMode_ = trackerModeEnum::trackUninit;
+
+      //try to lock image, don't get hung up
       boost::shared_lock<boost::shared_mutex> outlock(mutexOutputImage_, boost::try_to_lock);
 
       // if we cant lock it then just drop this frame
@@ -639,7 +718,7 @@ int tt_tracker::displayloop()
       objectCOM.x = 0;
       objectCOM.y = 0;
       
-      switch(trackerMode_)
+      switch(aggregateTrackingMode_)
       {
         case startTracking:
 
@@ -647,28 +726,32 @@ int tt_tracker::displayloop()
 
         case tracking:
          
-          if (trackerOk)
+          for( auto &trackerEngine : trackerEngines_)
           {
-              // Tracking success : Draw the tracked object
-              rectangle(out_image_, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 );
+            // Tracking success : Draw the tracked object
+            //rectangle(out_image_, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 );
+
+            if (trackerEngine.isOK)
+            {
+              rectangle(out_image_, trackerEngine.trackingBox, cv::Scalar( 255, 0, 0 ), 2, 1 );
 
               // Draw delta line
-              
-              objectCOM = (trackingBox_.br() + trackingBox_.tl())*0.5;
+                
+              objectCOM = (trackerEngine.trackingBox.br() + trackerEngine.trackingBox.tl())*0.5;
               line(out_image_, IamgeCOM, objectCOM, cv::Scalar( 0, 0, 255 ), 2, 1 );
               circle(out_image_, IamgeCOM, 10, cv::Scalar( 0, 0, 255 ), 2, 1 );
 
-              releativeCoords = findPositionRelativeToImageCenter(trackingBox_, frameHeight_, frameWidth_ );
+              releativeCoords = findPositionRelativeToImageCenter(trackerEngine.trackingBox, frameHeight_, frameWidth_ );
 
               tt_tracker_ros_msgs::TrackBoxes TrackBoxesResults_;
               tt_tracker_ros_msgs::TrackBox TrackBox;
 
               TrackBox.Class = searchForClassName_;
               TrackBox.probability = foundObjcetClassProbability;
-              TrackBox.xmin = trackingBox_.x;
-              TrackBox.ymin = trackingBox_.y;
-              TrackBox.xmax = trackingBox_.width;
-              TrackBox.ymax = trackingBox_.height;
+              TrackBox.xmin = trackerEngine.trackingBox.x;
+              TrackBox.ymin = trackerEngine.trackingBox.y;
+              TrackBox.xmax = trackerEngine.trackingBox.width;
+              TrackBox.ymax = trackerEngine.trackingBox.height;
 
               TrackBox.coordsPercentH = releativeCoords.hPercent;
               TrackBox.coordsPercentW = releativeCoords.wPercent;
@@ -676,15 +759,16 @@ int tt_tracker::displayloop()
               TrackBox.action = "TrackThis";
               TrackBoxesResults_.header.stamp = ros::Time::now();
               TrackBoxesResults_.header.frame_id = "tracking";
-              
+                
               TrackBoxesResults_.track_boxes.push_back(TrackBox);
               TrackBoxesPublisher_.publish(TrackBoxesResults_);
-          }
-          else
-          {
+            }
+            else
+            {
               // Tracking failure detected.
               putText(out_image_, "Tracking failure detected", 
                 cv::Point(100,80), cv::FONT_HERSHEY_SIMPLEX, 0.75, cv::Scalar(0,0,255),2);
+            }
           }
 
           // Display tracker type on frame

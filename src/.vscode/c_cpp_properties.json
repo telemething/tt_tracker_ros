@@ -25,9 +25,7 @@
             "intelliSenseMode": "gcc-x64",
             "compilerPath": "/usr/bin/clang",
             "cStandard": "c11",
-            "cppStandard": "c++17",
-            "configurationProvider": "vector-of-bool.cmake-tools",
-            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+            "cppStandard": "c++17"
         }
     ],
     "version": 4
