@@ -84,20 +84,32 @@ class TrackerEngine
 {
  public:
 
+  int index = 0;
   cv::Ptr<cv::Tracker> tracker;
   cv::Rect2d trackingBox;
-  bool isOK = true;
+  cv::Point centerOfMass;
+  double lastGoodTrackTickCount;
   std::string name  = "-";
+
+  bool isOK = true;
+  bool isInStdDev = false;
+  bool hasData = false;
 
   trackerModeEnum trackerMode_ = trackerModeEnum::trackUninit;
   searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
   trackerAlgEnum trackerAlg = trackerAlgEnum::algUninit;
+
+  static int nextIndex;
 };
 
+//int TrackerEngine::nextIndex = 0;
 
 class tt_tracker
 {
  public:
+
+  // Print every object detected, very verbose, not for regular use
+  bool printDetectedObjectNames_ = false;
 
   // ROS node handle.
   ros::NodeHandle nodeHandle_;
@@ -138,7 +150,7 @@ class tt_tracker
 
   //trackerModeEnum trackerMode_ = trackUninit;
   trackerModeEnum aggregateTrackingMode_ = trackerModeEnum::trackUninit;
-  searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
+  searcherModeEnum aggregateSearchingMode_ = searcherModeEnum::searchUninit;
 
   std::thread trackloop_thread; 
   std::thread publishTrackingModeloop_thread;
@@ -151,11 +163,12 @@ class tt_tracker
   int frameHeight_;
   bool imageStatus_ = false;
   bool haveValidGimbalAngle_ = false;
-  double lastGoodTrackTickCount_;
+  //double lastGoodTrackTickCount_;
   int trackingFailureTimeoutSeconds_ = 1;
   int publishTrackingModeloopTimeoutSeconds_ = 1;
   geometry_msgs::Vector3Stamped gimbalAngle_;
   float minimumObjectIdConfidencePercent;
+  int _currentBestTracker = 0;
 
   tt_tracker_ros_msgs::CurrentTrackMode currentTrackModeMessage_;
 
@@ -168,17 +181,24 @@ class tt_tracker
     double wPercent;
   };
 
+  float* _distMatrix;
+  float* _distSumMatrix;
+
+  void calcD();
   bool readParameters();
   int trackloop();
   int publishTrackingModeloop();
   int displayloop();
   void init();
-  int addTracker(trackerAlgEnum trackerAlg, std::string name);
+  int addTrackerEngine(trackerAlgEnum trackerAlg, std::string name);
+  int resetTrackerEngine(TrackerEngine trackerEngine);
   releativeCoordsStruct findPositionRelativeToImageCenter(const cv::Rect objectRect, const int inageSizeH, const int imageSizeW);
   void startSearchingForObject(const std::string className);
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
   void darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBoxes& bboxMessage);
   void gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg);
+  cv::Scalar GetStatusColor(TrackerEngine& trackerEngine);
+  cv::Ptr<cv::Tracker> CreateTracker(trackerAlgEnum trackerAlg);
 };
 
 } /* namespace darknet_ros*/
