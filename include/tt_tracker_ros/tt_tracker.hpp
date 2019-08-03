@@ -73,6 +73,10 @@
 #include <darknet_ros_msgs/BoundingBoxes.h>
 #include <darknet_ros_msgs/BoundingBox.h>
 
+#include "spdlog/spdlog.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
+#include "spdlog/sinks/basic_file_sink.h"
+
 namespace tt_tracker_ros 
 {
 // List of tracker algorithms in OpenCV 3.4.1
@@ -88,7 +92,8 @@ class TrackerEngine
   cv::Ptr<cv::Tracker> tracker;
   cv::Rect2d trackingBox;
   cv::Point centerOfMass;
-  double lastGoodTrackTickCount;
+  double lastIsOkTickCount;
+  double lastInStdDevTickCount;
   std::string name  = "-";
 
   bool isOK = true;
@@ -152,6 +157,7 @@ class tt_tracker
   trackerModeEnum aggregateTrackingMode_ = trackerModeEnum::trackUninit;
   searcherModeEnum aggregateSearchingMode_ = searcherModeEnum::searchUninit;
 
+  std::thread log_thread; 
   std::thread trackloop_thread; 
   std::thread publishTrackingModeloop_thread;
   std::thread displayloop_thread;
@@ -164,13 +170,16 @@ class tt_tracker
   bool imageStatus_ = false;
   bool haveValidGimbalAngle_ = false;
   //double lastGoodTrackTickCount_;
-  int trackingFailureTimeoutSeconds_ = 1;
+  int isOkTimeoutSeconds_ = 1;
+  int isInStdDevTimeoutSeconds_ = 3;
   int publishTrackingModeloopTimeoutSeconds_ = 1;
+  int logloopTimeoutMilliseconds_ = 250;
   geometry_msgs::Vector3Stamped gimbalAngle_;
   float minimumObjectIdConfidencePercent;
   int _currentBestTracker = 0;
 
   tt_tracker_ros_msgs::CurrentTrackMode currentTrackModeMessage_;
+  std::shared_ptr<spdlog::logger> logger_;
 
   explicit tt_tracker(ros::NodeHandle nh);
   ~tt_tracker();
@@ -186,6 +195,7 @@ class tt_tracker
 
   void calcD();
   bool readParameters();
+  int logloop();
   int trackloop();
   int publishTrackingModeloop();
   int displayloop();
@@ -199,6 +209,7 @@ class tt_tracker
   void gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg);
   cv::Scalar GetStatusColor(TrackerEngine& trackerEngine);
   cv::Ptr<cv::Tracker> CreateTracker(trackerAlgEnum trackerAlg);
+  void CreateLogger();
 };
 
 } /* namespace darknet_ros*/

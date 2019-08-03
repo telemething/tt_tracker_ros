@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 2.8.3)
+#cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.1)
 project(tt_tracker_ros)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
@@ -49,6 +50,13 @@ find_package(catkin REQUIRED
     tt_tracker_ros_msgs
     image_transport
 )
+
+# https://github.com/gabime/spdlog
+if(NOT TARGET spdlog)
+    # Stand-alone build
+    find_package(spdlog REQUIRED)
+endif()
+
 ##   * add "message_runtime" and every package in MSG_DEP_SET to
 ##     catkin_package(CATKIN_DEPENDS ...)
 ##   * uncomment the add_*_files sections below as needed
@@ -213,13 +221,19 @@ include_directories(
 add_executable(tt_tracker_ros_node
   include/tt_tracker_ros/tt_tracker.hpp
   src/tt_tracker.cpp
-  src/tt_tracker_ros_node.cpp
-)
-add_dependencies(tt_tracker_ros_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+  src/tt_tracker_ros_node.cpp)
+
+add_dependencies(tt_tracker_ros_node 
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} 
+  ${catkin_EXPORTED_TARGETS})
+
 target_link_libraries(tt_tracker_ros_node
   stdc++
   ${Boost_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
-)
+  spdlog::spdlog)
+
+  # Create logs directory
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/spdlogs")
