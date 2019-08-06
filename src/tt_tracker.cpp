@@ -49,7 +49,7 @@ namespace tt_tracker_ros
 int TrackerEngine::nextIndex = 0;
 
 //*****************************************************************************
-//*
+//*ww
 //*
 //*
 //******************************************************************************
@@ -115,8 +115,6 @@ bool tt_tracker::readParameters()
     viewImage_ = false;
   }*/
 
-  ROS_INFO("[tt_tracker] X--- sup ---");
-
   return true;
 }
 
@@ -128,9 +126,6 @@ bool tt_tracker::readParameters()
 
 void tt_tracker::init()
 {
-
-  ROS_INFO("[tt_tracker] init().");
-
   //std::signal(SIGINT, signal_handler);
   std::signal(SIGSEGV, signal_handler);
 
@@ -278,7 +273,8 @@ void tt_tracker::gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstP
 
 void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBoxes& bboxMessage)
 {
-  ROS_DEBUG("[tt_tracker] darknetBoundingBoxes received.");
+  //ROS_DEBUG("[tt_tracker] darknetBoundingBoxes received.");
+  //logger_->debug("darknetBoundingBoxes received.");
 
   if(aggregateSearchingMode_ != searching)
     return;
@@ -303,15 +299,15 @@ void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBo
     // Very verbose, only do this while debugging this one thing
     if(printDetectedObjectNames_)
     {
-      printf("\n\n------ Seq:%.u\n",Seq);
-      printf("Objects:\n\n");
+      logger_->debug("------ Seq:{0:d}",Seq);
+      logger_->debug("Objects:");
     }
 
     for(int index = 0; index < bbox.size(); index++)
     {
       // Very verbose, only do this while debugging this one thing
       if(printDetectedObjectNames_)
-        printf("%s\n", bbox[index].Class.c_str() );	
+        logger_->debug("{}", bbox[index].Class.c_str());
 
       if( bbox[index].Class.c_str() == searchForClassName_)
       {
@@ -336,6 +332,7 @@ void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBo
   catch ( ... ) 
   {
     ROS_ERROR("darknetBoundingBoxesCallback exception");
+    logger_->error("darknetBoundingBoxesCallback exception");
     return;
   }
  
@@ -353,6 +350,7 @@ int cvvCount = 5;
 void tt_tracker::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
 {
   ROS_DEBUG("[tt_tracker] image received.");
+  //logger_->debug("image received.");
 
   try 
   {
@@ -386,15 +384,18 @@ void tt_tracker::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
   catch (cv_bridge::Exception& e) 
   {
     ROS_ERROR("-- EXCEPTION --- tt_tracker::cameraCallback: %s", e.what());
+    logger_->error("- EXCEPTION --- tt_tracker::cameraCallback: {}", e.what());
     return;
   }
   catch(const std::exception& e)
   {
     ROS_ERROR("--- EXCEPTION --- tt_tracker::cameraCallback: %s", e.what());
+    logger_->error("- EXCEPTION --- tt_tracker::cameraCallback: {}", e.what());
   }
   catch(...)
   {
     ROS_ERROR("--- EXCEPTION --- tt_tracker::cameraCallback: -undefined-");
+    logger_->error("--- EXCEPTION --- tt_tracker::cameraCallback: -undefined-");
   }
 
   
@@ -448,6 +449,8 @@ cv::Ptr<cv::Tracker> tt_tracker::CreateTracker(trackerAlgEnum trackerAlg)
 
 int tt_tracker::addTrackerEngine(trackerAlgEnum trackerAlg, std::string name)
 {
+  logger_->debug("-CREATE Tracker: {}", name.c_str());
+
   TrackerEngine trackerEngine;
   bool foundTrackerEngine = false;
 
@@ -477,8 +480,8 @@ int tt_tracker::addTrackerEngine(trackerAlgEnum trackerAlg, std::string name)
     trackerEngines_.push_back(trackerEngine);
   }
 
+  // we create these globally because of very high use
   auto engineCount = trackerEngines_.size();
-
   _distMatrix = new float[engineCount,engineCount];
   _distSumMatrix = new float[engineCount];
 
@@ -491,18 +494,27 @@ int tt_tracker::addTrackerEngine(trackerAlgEnum trackerAlg, std::string name)
 //*
 //******************************************************************************
 
-int tt_tracker::resetTrackerEngine(TrackerEngine trackerEngine)
+int tt_tracker::resetTrackerEngine(TrackerEngine& trackerEngine)
 {
-  printf("RESET : %s\n", trackerEngine.name.c_str() );	
+  logger_->debug("-RESET : {}", trackerEngine.name.c_str());
 
-  trackerEngine.tracker->clear();
-  //trackerEngine.tracker.release();
+  //trackerEngine.tracker->clear();
+
+  //exclusive access required because releasing and creating
+  boost::shared_lock<boost::shared_mutex> lock(*(trackerEngine.mutexCvTracker));
+  logger_->debug("-RESET : {} : Lock aquired", trackerEngine.name.c_str());
+
+  trackerEngine.tracker.release();
   trackerEngine.hasData = false;
   trackerEngine.isInStdDev = false;
   trackerEngine.isOK = true;
   trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
   trackerEngine.searcherMode_ = searcherModeEnum::searchUninit;
-  //trackerEngine.tracker = CreateTracker(trackerEngine.trackerAlg);
+  trackerEngine.tracker = CreateTracker(trackerEngine.trackerAlg);
+
+  //explicity unlock so that we can confidently write debug message
+  lock.release();
+  logger_->debug("-RESET : {} : Lock released", trackerEngine.name.c_str());
 
   return 0;
 }
@@ -578,7 +590,7 @@ int tt_tracker::publishTrackingModeloop()
 //*
 //******************************************************************************
 
-void tt_tracker::calcD()
+/*/void tt_tracker::calcD()
 {
   // TODO : this only works if two or more points are tracking
   // do things like compare to detector and history of accuracy
@@ -664,6 +676,151 @@ void tt_tracker::calcD()
       }
     }
   } 
+}*/
+
+void tt_tracker::calcD()
+{
+  // TODO : this only works if two or more points are tracking
+  // do things like compare to detector and history of accuracy
+
+  // how many engines do we have?
+  auto engineCount = trackerEngines_.size();
+
+  int smallestEngineSumValue = INT_MAX;
+  int smallestEngineSumIndex = 0;
+  int largestEngineSumValue = 0;
+  int largestEngineSumIndex = 0;
+  double engineVariance;
+  float engineStdDev;
+  int engineOkCount;
+  double engineMean;
+
+  double sum = 0;
+  double mean = 0;
+  double variance = 0;
+  double stdDev = 0;
+
+  //build an array of distances
+  for(int a = 0; a < engineCount; a++)
+  {
+    // engine not ok or has no data, blank out entire row
+    if(!trackerEngines_[a].isOK | !trackerEngines_[a].hasData)
+    {
+      for(int b = 0; b < engineCount; b++)
+        _distMatrix[a,b] = 0.0f;
+      continue;
+    }
+
+    // we calculate the sum of distances per engine
+    _distSumMatrix[a] = 0.0f;
+    engineVariance = 0.0f;
+    engineOkCount = 0;
+
+    for(int b = 0; b < engineCount; b++)
+    {
+      // if either engine is not ok then it's entry shouldn't count
+      if(!trackerEngines_[b].isOK)
+        _distMatrix[a,b] = 0.0f;
+      else
+      {
+        _distMatrix[a,b] = sqrt(
+          pow(trackerEngines_[a].centerOfMass.x - trackerEngines_[b].centerOfMass.x, 2) + 
+          pow(trackerEngines_[a].centerOfMass.y - trackerEngines_[b].centerOfMass.y, 2));
+
+        _distSumMatrix[a] += _distMatrix[a,b];
+        engineOkCount++;
+      }
+    }
+    
+    if(engineOkCount == 0)
+    {
+      //this shouldnt be possible
+      logger_->error("--- ERROR --- calcD() : Inner engineOkCount == 0");
+
+      // set this out of bounds so later procs dont find it
+      smallestEngineSumIndex = -1;
+      largestEngineSumIndex = -1;    
+    }
+    else if(engineOkCount == 1)
+    {
+      // the only viable engine is the one in the outer loop
+      smallestEngineSumIndex = a;
+      // set this out of bounds so later procs dont find it
+      largestEngineSumIndex = -1;    
+    }
+    else
+    {
+      // find the mean
+      /*engineMean = _distSumMatrix[a] / (float)engineOkCount;
+
+      // find the variance
+      for(int b = 0; b < engineCount; b++)
+        engineVariance += pow(_distMatrix[a,b] - engineMean, 2);
+
+      // find the stddev
+      engineStdDev = sqrt(engineVariance);*/
+
+      // remember which engine has the lowest sum of distances
+      if(_distSumMatrix[a] <  smallestEngineSumValue)
+      {
+        smallestEngineSumValue = _distSumMatrix[a];
+        smallestEngineSumIndex = a;
+      }
+
+      // remember which engine has the highest sum of distances
+      if(_distSumMatrix[a] > largestEngineSumValue)
+      {
+        largestEngineSumValue = _distSumMatrix[a];
+        largestEngineSumIndex = a;
+      }
+    }
+
+    sum += _distSumMatrix[a];
+  }
+
+  _currentBestTracker = smallestEngineSumIndex;
+  _currentWorstTracker = largestEngineSumIndex;
+
+  mean = sum/(float)engineOkCount;
+
+  for(int a = 0; a < engineCount; a++)
+  {
+    if(trackerEngines_[a].isOK | trackerEngines_[a].hasData)
+      variance += pow(_distSumMatrix[a] - mean, 2);
+  }
+
+  variance /= engineOkCount;
+  stdDev = sqrt(variance);
+
+  // we want to mark it as out if stdDev if it is X times stdDev
+  //if( (stdDev * 5) > largestEngineSumValue )
+  //  _currentWorstTracker = -1;  
+
+  // TODO : For now lets just say the worst tracker is the only one out
+  for(int a = 0; a < engineCount; a++)
+  {
+    trackerEngines_[a].distance = _distSumMatrix[a];
+    trackerEngines_[a].stdDistance = stdDev;
+
+    if(a == _currentWorstTracker)
+      trackerEngines_[a].isInStdDev = false;
+    else
+      trackerEngines_[a].isInStdDev = true;
+  }
+
+
+      /*_currentBestTracker = smallestEngineSumIndex;
+
+      // loop through the row again and identify the ones out of stddev
+      for(int b = 0; b < engineCount; b++)
+      {
+        if(_distMatrix[a,b] < engineStdDev )
+          trackerEngines_[b].isInStdDev = true;
+        else
+          trackerEngines_[b].isInStdDev = false;
+      }
+    }
+  } */
 }
 
 //*****************************************************************************
@@ -704,7 +861,7 @@ int tt_tracker::trackloop()
       //if(trackerMode_ != startTracking & trackerMode_ != tracking)
       //  continue;
 
-      ROS_DEBUG("[tt_tracker] image received.");
+      //ROS_DEBUG("[tt_tracker] image received.");
      
       //lock the image so new images don't overwrite
       boost::shared_lock<boost::shared_mutex> lock(mutexInputRawImage_);
@@ -712,14 +869,20 @@ int tt_tracker::trackloop()
       // TODO : Remove this, it is just for comparison
       //cv::Rect2d beforeBox;
 
-      printf("-----------\n");
-
+      logger_->debug("--- trackloop ---");
       
       for( TrackerEngine &trackerEngine : trackerEngines_)
       {
         try
         {   
           //printf("------ Engine : %s ------\n", trackerEngine.name.c_str() );
+
+          //try to lock cvTracker (to prevent clash with other threads)
+          boost::shared_lock<boost::shared_mutex> trackerLock(*(trackerEngine.mutexCvTracker), boost::try_to_lock);
+
+          // if we cant lock it then just drop this frame
+          if(!trackerLock)
+            continue;
 
           // Start timer
           timer = (double)cv::getTickCount();
@@ -735,19 +898,19 @@ int tt_tracker::trackloop()
               //beforeBox.height = trackerEngine.trackingBox.height;
               //beforeBox.width = trackerEngine.trackingBox.width;
 
-              if(trackerEngine.trackingBox.x < 0.0)
+              /*if(trackerEngine.trackingBox.x < 0.0)
               {
-                printf("tracker : %s : trackingBox.x < 0.0\n", trackerEngine.name.c_str() );
+                logger_->debug("^ trackingBox.x < 0.0 : {}", trackerEngine.name.c_str());
                 trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;	
                 continue;
               }
 
               if(trackerEngine.trackingBox.y < 0.0)
               {
-                printf("tracker : %s : trackingBox.y < 0.0\n", trackerEngine.name.c_str() );
+                logger_->debug("^ trackingBox.y < 0.0 : {}", trackerEngine.name.c_str());
                 trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;	
                 continue;
-              }
+              }*/
 
               trackerEngine.isOK = trackerEngine.tracker->update(in_raw_image_->image, trackerEngine.trackingBox);
               trackerEngine.centerOfMass = (trackerEngine.trackingBox.br() + trackerEngine.trackingBox.tl())*0.5;
@@ -767,7 +930,7 @@ int tt_tracker::trackloop()
                 // If we have lost track for x amount of time then re initiate search mode
                 if( (timer - trackerEngine.lastIsOkTickCount) > isOkTimeoutTicks )
                 {
-                  printf("Tracker OK Out : %s\n", trackerEngine.name.c_str() );	
+                  logger_->debug("^ isOK Out : {}", trackerEngine.name.c_str() );	
                   trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;  
                 }
               } 
@@ -782,7 +945,8 @@ int tt_tracker::trackloop()
                   // If we are out of stddev for x amount of time then re initiate search mode
                   if( (timer - trackerEngine.lastInStdDevTickCount) > isInStdDevTimeoutTicks )
                   {
-                    printf("StdDev Out : %s\n", trackerEngine.name.c_str() );	
+                    logger_->debug("^ StdDev Out : {} - dist: {:.0f} - stdDev: {:.0f}", 
+                      trackerEngine.name.c_str(), trackerEngine.distance, trackerEngine.stdDistance );	
                     trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;  
                   }
                 }
@@ -795,8 +959,14 @@ int tt_tracker::trackloop()
               trackerEngine.trackingBox.y = trackThisBox_.y;
               trackerEngine.trackingBox.width = trackThisBox_.width;
               trackerEngine.trackingBox.height = trackThisBox_.height;
-
               trackerEngine.isOK = trackerEngine.tracker->init(in_raw_image_->image, trackerEngine.trackingBox);
+
+              logger_->debug("start tracking : {} - xywh: {:.0f}:{:.0f}:{:.0f}:{:.0f} - ok: {}", 
+                trackerEngine.name.c_str(), 
+                trackerEngine.trackingBox.x, trackerEngine.trackingBox.y, 
+                trackerEngine.trackingBox.width, trackerEngine.trackingBox.height,
+                trackerEngine.isOK );	
+
               trackerEngine.trackerMode_ = trackerModeEnum::tracking;
               trackerEngine.hasData = false;
               trackerEngine.isInStdDev = false;
@@ -810,6 +980,8 @@ int tt_tracker::trackloop()
 
             case trackerModeEnum::resetTracker:
 
+              logger_->debug("reset tracking : {}", trackerEngine.name.c_str() );	
+
               // TODO : maybe we shouldn't reinit
               trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
               resetTrackerEngine(trackerEngine);
@@ -820,12 +992,12 @@ int tt_tracker::trackloop()
         }
         catch(const std::exception& e)
         {
-          printf("EX : %s\n", trackerEngine.name.c_str() );
+          logger_->error("--- EXCEPTION --- : tracker : {0} : {1}", trackerEngine.name.c_str(), e.what());
           ROS_ERROR("--- EXCEPTION --- trackloop switch(trackerEngine.trackerMode_): %s", e.what());
         }
         catch(...)
         {
-          printf("EX : %s\n", trackerEngine.name.c_str() );
+          logger_->error("--- EXCEPTION --- : tracker : {0} : -undefined-", trackerEngine.name.c_str());
           ROS_ERROR("--- EXCEPTION --- trackloop switch(trackerEngine.trackerMode_): -undefined-");
         }
 
@@ -955,7 +1127,7 @@ int tt_tracker::displayloop()
       //if(trackerMode_ != startTracking & trackerMode_ != tracking)
       //  continue;
 
-      ROS_DEBUG("[tt_tracker] output image ready.");
+      //ROS_DEBUG("[tt_tracker] output image ready.");
     
       //lock the image so new images don't overwrite
       boost::shared_lock<boost::shared_mutex> lock(mutexOutputImage_);
@@ -1111,10 +1283,12 @@ int tt_tracker::displayloop()
       }
       catch(const std::exception& e)
       {
+        logger_->debug("--- EXCEPTION --- displayloop : {}",  e.what());	
         ROS_ERROR("--- EXCEPTION --- ccv::imshow: %s", e.what());
       }
       catch(...)
       {
+        logger_->debug("--- EXCEPTION --- displayloop : -undefined-");
         ROS_ERROR("--- EXCEPTION --- ccv::imshow: -undefined-");
       }
                 

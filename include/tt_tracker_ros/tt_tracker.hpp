@@ -88,6 +88,19 @@ class TrackerEngine
 {
  public:
 
+  explicit TrackerEngine()
+    {
+      mutexCvTracker = new boost::shared_mutex();
+    }
+  ~TrackerEngine()
+    {
+      if(nullptr != mutexCvTracker) 
+      {
+        //mutexCvTracker->unlock_shared();
+        delete mutexCvTracker;
+      }
+    }
+
   int index = 0;
   cv::Ptr<cv::Tracker> tracker;
   cv::Rect2d trackingBox;
@@ -103,6 +116,11 @@ class TrackerEngine
   trackerModeEnum trackerMode_ = trackerModeEnum::trackUninit;
   searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
   trackerAlgEnum trackerAlg = trackerAlgEnum::algUninit;
+
+  boost::shared_mutex *mutexCvTracker = nullptr;
+
+  double stdDistance;
+  double distance;
 
   static int nextIndex;
 };
@@ -177,6 +195,7 @@ class tt_tracker
   geometry_msgs::Vector3Stamped gimbalAngle_;
   float minimumObjectIdConfidencePercent;
   int _currentBestTracker = 0;
+  int _currentWorstTracker = 0;
 
   tt_tracker_ros_msgs::CurrentTrackMode currentTrackModeMessage_;
   std::shared_ptr<spdlog::logger> logger_;
@@ -201,7 +220,7 @@ class tt_tracker
   int displayloop();
   void init();
   int addTrackerEngine(trackerAlgEnum trackerAlg, std::string name);
-  int resetTrackerEngine(TrackerEngine trackerEngine);
+  int resetTrackerEngine(TrackerEngine& trackerEngine);
   releativeCoordsStruct findPositionRelativeToImageCenter(const cv::Rect objectRect, const int inageSizeH, const int imageSizeW);
   void startSearchingForObject(const std::string className);
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
