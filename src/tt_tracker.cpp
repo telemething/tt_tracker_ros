@@ -246,8 +246,8 @@ void tt_tracker::startSearchingForObject(const std::string className)
 
   for( auto &trackerEngine : trackerEngines_)
   {
-    trackerEngine.trackerMode_ = trackerModeEnum::stopTracking;
-    trackerEngine.searcherMode_ = searcherModeEnum::searching;
+    trackerEngine.setTrackerMode( trackerModeEnum::stopTracking );
+    trackerEngine.setSearcherMode( searcherModeEnum::searching );
   }
 
   aggregateSearchingMode_ = searcherModeEnum::searching;
@@ -321,8 +321,9 @@ void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBo
         for( auto &trackerEngine : trackerEngines_)
         {
           //if it is not tracking, then start tracking
-          if(trackerEngine.trackerMode_ != trackerModeEnum::tracking)
-            trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
+          if( trackerEngine.getTrackerMode() != trackerModeEnum::tracking & 
+              trackerEngine.getTrackerMode() != trackerModeEnum::resetTracker )
+            trackerEngine.setTrackerMode( trackerModeEnum::startTracking );
         }
 
         return;
@@ -451,34 +452,35 @@ int tt_tracker::addTrackerEngine(trackerAlgEnum trackerAlg, std::string name)
 {
   logger_->debug("-CREATE Tracker: {}", name.c_str());
 
-  TrackerEngine trackerEngine;
-  bool foundTrackerEngine = false;
+  //TrackerEngine trackerEngine;
+  auto trackerEngine = std::make_shared<TrackerEngine>();
+  //bool foundTrackerEngine = false;
 
   // for now we only want one tracker of each algorithm
   // so if we find one then we use it. We release the
   // existing cv tracker because we want a new one
-  for( auto &tEngine : trackerEngines_)
+  /*/for( auto &tEngine : trackerEngines_)
     if(tEngine.trackerAlg == trackerAlg)
     {
       foundTrackerEngine = true;
-      trackerEngine.tracker.release();
+      trackerEngine->tracker.release();
       trackerEngine = tEngine;
-    }
+    }*/
 
-  trackerEngine.name = name;
-  trackerEngine.trackerAlg = trackerAlg;
-  trackerEngine.hasData = false;
-  trackerEngine.isInStdDev = false;
-  trackerEngine.isOK = true;
-  trackerEngine.searcherMode_ = searcherModeEnum::searchUninit;
-  trackerEngine.trackerMode_  = trackerModeEnum::trackUninit;
-  trackerEngine.tracker = CreateTracker(trackerEngine.trackerAlg);
+  trackerEngine->name = name;
+  trackerEngine->setTrackerAlg( trackerAlg );
+  trackerEngine->hasData = false;
+  trackerEngine->isInStdDev = false;
+  trackerEngine->isOK = true;
+  trackerEngine->setSearcherMode( searcherModeEnum::searchUninit );
+  trackerEngine->setTrackerMode( trackerModeEnum::trackUninit );
+  trackerEngine->tracker = CreateTracker(trackerEngine->getTrackerAlg());
 
-  if(!foundTrackerEngine)
-  {
-    trackerEngine.index = TrackerEngine::nextIndex++;
-    trackerEngines_.push_back(trackerEngine);
-  }
+  //if(!foundTrackerEngine)
+  //{
+    trackerEngine->index = TrackerEngine::nextIndex++;
+    trackerEngines_.push_back(*trackerEngine);
+  //}
 
   // we create these globally because of very high use
   auto engineCount = trackerEngines_.size();
@@ -508,9 +510,9 @@ int tt_tracker::resetTrackerEngine(TrackerEngine& trackerEngine)
   trackerEngine.hasData = false;
   trackerEngine.isInStdDev = false;
   trackerEngine.isOK = true;
-  trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
-  trackerEngine.searcherMode_ = searcherModeEnum::searchUninit;
-  trackerEngine.tracker = CreateTracker(trackerEngine.trackerAlg);
+  trackerEngine.setTrackerMode( trackerModeEnum::startTracking );
+  trackerEngine.setSearcherMode( searcherModeEnum::searchUninit );
+  trackerEngine.tracker = CreateTracker(trackerEngine.getTrackerAlg());
 
   //explicity unlock so that we can confidently write debug message
   lock.release();
@@ -882,12 +884,15 @@ int tt_tracker::trackloop()
 
           // if we cant lock it then just drop this frame
           if(!trackerLock)
+          {
+            logger_->debug("trylock failed : {}", trackerEngine.name.c_str() );	
             continue;
+          }
 
           // Start timer
           timer = (double)cv::getTickCount();
 
-          switch(trackerEngine.trackerMode_)
+          switch(trackerEngine.getTrackerMode())
           {
             case trackerModeEnum::tracking:
 
@@ -931,7 +936,7 @@ int tt_tracker::trackloop()
                 if( (timer - trackerEngine.lastIsOkTickCount) > isOkTimeoutTicks )
                 {
                   logger_->debug("^ isOK Out : {}", trackerEngine.name.c_str() );	
-                  trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;  
+                  trackerEngine.setTrackerMode( trackerModeEnum::resetTracker );  
                 }
               } 
                 // Manage isStdDev
@@ -947,7 +952,7 @@ int tt_tracker::trackloop()
                   {
                     logger_->debug("^ StdDev Out : {} - dist: {:.0f} - stdDev: {:.0f}", 
                       trackerEngine.name.c_str(), trackerEngine.distance, trackerEngine.stdDistance );	
-                    trackerEngine.trackerMode_ = trackerModeEnum::resetTracker;  
+                    trackerEngine.setTrackerMode( trackerModeEnum::resetTracker );  
                   }
                 }
 
@@ -967,7 +972,7 @@ int tt_tracker::trackloop()
                 trackerEngine.trackingBox.width, trackerEngine.trackingBox.height,
                 trackerEngine.isOK );	
 
-              trackerEngine.trackerMode_ = trackerModeEnum::tracking;
+              trackerEngine.setTrackerMode( trackerModeEnum::tracking );
               trackerEngine.hasData = false;
               trackerEngine.isInStdDev = false;
                                 
@@ -983,11 +988,15 @@ int tt_tracker::trackloop()
               logger_->debug("reset tracking : {}", trackerEngine.name.c_str() );	
 
               // TODO : maybe we shouldn't reinit
-              trackerEngine.trackerMode_ = trackerModeEnum::startTracking;
+              trackerEngine.setTrackerMode( trackerModeEnum::startTracking );
               resetTrackerEngine(trackerEngine);
-              trackerEngine.searcherMode_ = searcherModeEnum::searching;
+              trackerEngine.setSearcherMode( searcherModeEnum::searching );
 
             break;
+
+            //explicit release
+            trackerLock.release(); 
+                      
           } // switch(trackerEngine.trackerMode_)
         }
         catch(const std::exception& e)
@@ -1000,7 +1009,6 @@ int tt_tracker::trackloop()
           logger_->error("--- EXCEPTION --- : tracker : {0} : -undefined-", trackerEngine.name.c_str());
           ROS_ERROR("--- EXCEPTION --- trackloop switch(trackerEngine.trackerMode_): -undefined-");
         }
-
       } // for( auto &trackerEngine : trackerEngines_)
 
       calcD();
@@ -1012,9 +1020,9 @@ int tt_tracker::trackloop()
 
       for( auto &trackerEngine : trackerEngines_)
       {
-        if(trackerEngine.trackerMode_ == trackerModeEnum::tracking)
+        if(trackerEngine.getTrackerMode() == trackerModeEnum::tracking)
           somebodyIsTracking = true;
-        if(trackerEngine.searcherMode_ == searcherModeEnum::searching)
+        if(trackerEngine.getSearcherMode() == searcherModeEnum::searching)
           somebodyIsSearching = true;
       }
 

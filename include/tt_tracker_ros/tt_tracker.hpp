@@ -86,20 +86,30 @@ enum searcherModeEnum {searchUninit, startSearching, searching, found};
 
 class TrackerEngine
 {
+ private:
+
+  trackerModeEnum _trackerMode = trackerModeEnum::trackUninit;
+  searcherModeEnum _searcherMode = searcherModeEnum::searchUninit;
+  trackerAlgEnum _trackerAlg = trackerAlgEnum::algUninit;
+
  public:
 
   explicit TrackerEngine()
-    {
-      mutexCvTracker = new boost::shared_mutex();
-    }
+  {
+    mutexCvTracker = new boost::shared_mutex();
+  }
+  /*TrackerEngine(const TrackerEngine &source)
+  {
+    mutexCvTracker = source.mutexCvTracker;
+  }*/
   ~TrackerEngine()
+  {
+    if(nullptr != mutexCvTracker) 
     {
-      if(nullptr != mutexCvTracker) 
-      {
-        //mutexCvTracker->unlock_shared();
-        delete mutexCvTracker;
-      }
+      //mutexCvTracker->unlock_shared();
+      //delete mutexCvTracker;
     }
+  }
 
   int index = 0;
   cv::Ptr<cv::Tracker> tracker;
@@ -113,9 +123,13 @@ class TrackerEngine
   bool isInStdDev = false;
   bool hasData = false;
 
-  trackerModeEnum trackerMode_ = trackerModeEnum::trackUninit;
-  searcherModeEnum searcherMode_ = searcherModeEnum::searchUninit;
-  trackerAlgEnum trackerAlg = trackerAlgEnum::algUninit;
+  trackerModeEnum getTrackerMode() { return _trackerMode; }
+  searcherModeEnum getSearcherMode() { return _searcherMode; }
+  trackerAlgEnum getTrackerAlg() { return _trackerAlg; };
+
+  void setTrackerMode( trackerModeEnum trackerMode ) { _trackerMode = trackerMode; }
+  void setSearcherMode( searcherModeEnum searcherMode ) { _searcherMode = searcherMode; }
+  void setTrackerAlg( trackerAlgEnum trackerAlg ) { _trackerAlg = trackerAlg; }
 
   boost::shared_mutex *mutexCvTracker = nullptr;
 
