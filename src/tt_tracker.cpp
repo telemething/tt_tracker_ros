@@ -133,6 +133,9 @@ void tt_tracker::init()
   //std::raise(SIGINT);
   //std::cout << "SignalValue: " << gSignalStatus << '\n';
 
+  //the composite has nothing to show until it does
+  _compositeTrackerEngine.setIsOK(false);
+
   addTrackerEngine(trackerAlgEnum::MIL, "Mil");
   addTrackerEngine(trackerAlgEnum::CSRT, "Csrt");
   //addTrackerEngine(trackerAlgEnum::GOTURN, "Go");
@@ -312,10 +315,10 @@ void tt_tracker::darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBo
       if( bbox[index].Class.c_str() == searchForClassName_)
       {
         foundObjcetClassProbability = bbox[index].probability;    
-        trackThisBox_.x = bbox[index].xmin;
-        trackThisBox_.y = bbox[index].ymin;
-        trackThisBox_.width = bbox[index].xmax - bbox[index].xmin;
-        trackThisBox_.height = bbox[index].ymax - bbox[index].ymin;
+        _objectDetectedBox.x = bbox[index].xmin;
+        _objectDetectedBox.y = bbox[index].ymin;
+        _objectDetectedBox.width = bbox[index].xmax - bbox[index].xmin;
+        _objectDetectedBox.height = bbox[index].ymax - bbox[index].ymin;
 
         //for each tracker engine
         for( auto &trackerEngine : trackerEngines_)
@@ -409,7 +412,7 @@ void tt_tracker::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
 //*
 //*****************************************************************************
 
-cv::Ptr<cv::Tracker> tt_tracker::CreateTracker(trackerAlgEnum trackerAlg)
+/*cv::Ptr<cv::Tracker> tt_tracker::CreateTracker(trackerAlgEnum trackerAlg)
 {
   switch(trackerAlg)
   {
@@ -440,7 +443,7 @@ cv::Ptr<cv::Tracker> tt_tracker::CreateTracker(trackerAlgEnum trackerAlg)
   }
 
   //TODO : throw if no match
-}
+}*/
 
 //*****************************************************************************
 //*
@@ -469,12 +472,12 @@ int tt_tracker::addTrackerEngine(trackerAlgEnum trackerAlg, std::string name)
 
   trackerEngine->name = name;
   trackerEngine->setTrackerAlg( trackerAlg );
-  trackerEngine->hasData = false;
-  trackerEngine->isInStdDev = false;
-  trackerEngine->isOK = true;
+  trackerEngine->setHasData( false );
+  trackerEngine->setIsInStdDev( false );
+  trackerEngine->setIsOK( true );
   trackerEngine->setSearcherMode( searcherModeEnum::searchUninit );
   trackerEngine->setTrackerMode( trackerModeEnum::trackUninit );
-  trackerEngine->tracker = CreateTracker(trackerEngine->getTrackerAlg());
+  trackerEngine->tracker = TrackerEngine::CreateTracker(trackerEngine->getTrackerAlg());
 
   //if(!foundTrackerEngine)
   //{
@@ -506,13 +509,15 @@ int tt_tracker::resetTrackerEngine(TrackerEngine& trackerEngine)
   boost::shared_lock<boost::shared_mutex> lock(*(trackerEngine.mutexCvTracker));
   logger_->debug("-RESET : {} : Lock aquired", trackerEngine.name.c_str());
 
-  trackerEngine.tracker.release();
-  trackerEngine.hasData = false;
-  trackerEngine.isInStdDev = false;
-  trackerEngine.isOK = true;
+  trackerEngine.reset();
+
+  /*trackerEngine.tracker.release();
+  trackerEngine.setHasData( false );
+  trackerEngine.setIsInStdDev( false );
+  trackerEngine.setIsOK( true );
   trackerEngine.setTrackerMode( trackerModeEnum::startTracking );
   trackerEngine.setSearcherMode( searcherModeEnum::searchUninit );
-  trackerEngine.tracker = CreateTracker(trackerEngine.getTrackerAlg());
+  trackerEngine.tracker = CreateTracker(trackerEngine.getTrackerAlg());*/
 
   //explicity unlock so that we can confidently write debug message
   lock.release();
@@ -680,6 +685,28 @@ int tt_tracker::publishTrackingModeloop()
   } 
 }*/
 
+//*****************************************************************************
+//*
+//* 
+//*
+//******************************************************************************
+
+void tt_tracker::CopyBest(tt_tracker_ros::TrackerEngine &engineIn)
+{
+    _compositeTrackerEngine.trackingBox = engineIn.trackingBox;
+    _compositeTrackerEngine.centerOfMass = engineIn.centerOfMass;
+    _compositeTrackerEngine.setHasData(engineIn.getHasData());
+
+    // the best tracker is not ok if it doesn't have data
+    _compositeTrackerEngine.setIsOK(engineIn.getIsOK() &  engineIn.getHasData());
+}
+
+//*****************************************************************************
+//*
+//* find the engine nearest to the highest density of points
+//*
+//******************************************************************************
+
 void tt_tracker::calcD()
 {
   // TODO : this only works if two or more points are tracking
@@ -706,7 +733,7 @@ void tt_tracker::calcD()
   for(int a = 0; a < engineCount; a++)
   {
     // engine not ok or has no data, blank out entire row
-    if(!trackerEngines_[a].isOK | !trackerEngines_[a].hasData)
+    if(!trackerEngines_[a].getIsOK() | !trackerEngines_[a].getHasData())
     {
       for(int b = 0; b < engineCount; b++)
         _distMatrix[a,b] = 0.0f;
@@ -721,7 +748,7 @@ void tt_tracker::calcD()
     for(int b = 0; b < engineCount; b++)
     {
       // if either engine is not ok then it's entry shouldn't count
-      if(!trackerEngines_[b].isOK)
+      if(!trackerEngines_[b].getIsOK())
         _distMatrix[a,b] = 0.0f;
       else
       {
@@ -783,14 +810,36 @@ void tt_tracker::calcD()
   _currentBestTracker = smallestEngineSumIndex;
   _currentWorstTracker = largestEngineSumIndex;
 
-  mean = sum/(float)engineOkCount;
+  // copy the relevant bits of the best tracker to the composite
+  CopyBest(trackerEngines_[_currentBestTracker]);
 
-  for(int a = 0; a < engineCount; a++)
+  bool throwOutWanderers = true;
+
+  if(throwOutWanderers)
   {
-    if(trackerEngines_[a].isOK | trackerEngines_[a].hasData)
-      variance += pow(_distSumMatrix[a] - mean, 2);
-  }
+    engineOkCount--;
+    sum -= _distSumMatrix[_currentWorstTracker];
 
+    mean = sum/(float)engineOkCount;
+
+    for(int a = 0; a < engineCount; a++)
+    {
+      if(_currentWorstTracker != a)
+        if(trackerEngines_[a].getIsOK() | trackerEngines_[a].getHasData())
+          variance += pow(_distSumMatrix[a] - mean, 2);
+    }
+  }
+  else
+  {
+    mean = sum/(float)engineOkCount;
+
+    for(int a = 0; a < engineCount; a++)
+    {
+      if(trackerEngines_[a].getIsOK() | trackerEngines_[a].getHasData())
+        variance += pow(_distSumMatrix[a] - mean, 2);
+    }
+  }
+  
   variance /= engineOkCount;
   stdDev = sqrt(variance);
 
@@ -805,24 +854,23 @@ void tt_tracker::calcD()
     trackerEngines_[a].stdDistance = stdDev;
 
     if(a == _currentWorstTracker)
-      trackerEngines_[a].isInStdDev = false;
+      trackerEngines_[a].setIsInStdDev( false );
     else
-      trackerEngines_[a].isInStdDev = true;
+      trackerEngines_[a].setIsInStdDev( true );
   }
 
+  /*for(int a = 0; a < engineCount; a++)
+  {
+    trackerEngines_[a].distance = _distSumMatrix[a];
+    trackerEngines_[a].stdDistance = stdDev;
 
-      /*_currentBestTracker = smallestEngineSumIndex;
+    if(_distSumMatrix[a] > stdDev * isInStdDevDistMult)
+      trackerEngines_[a].setIsInStdDev( false );
+    else
+      trackerEngines_[a].setIsInStdDev( true );
+  }*/
 
-      // loop through the row again and identify the ones out of stddev
-      for(int b = 0; b < engineCount; b++)
-      {
-        if(_distMatrix[a,b] < engineStdDev )
-          trackerEngines_[b].isInStdDev = true;
-        else
-          trackerEngines_[b].isInStdDev = false;
-      }
-    }
-  } */
+
 }
 
 //*****************************************************************************
@@ -840,6 +888,22 @@ int tt_tracker::logloop()
 
     std::this_thread::sleep_for(std::chrono::milliseconds(logloopTimeoutMilliseconds_));
   }
+}
+
+//*****************************************************************************
+//*
+//* deep copy for cv::Rect2d
+//*
+//******************************************************************************
+
+void tt_tracker::CopyRect( const cv::Rect2d& from, cv::Rect2d& to)
+{
+  to.x = from.x;
+  to.y = from.y;
+  to.width = from.width;
+  to.height = from.height;
+  //to.br = from.br;
+  //to.tl = from.tl;
 }
 
 //*****************************************************************************
@@ -917,15 +981,16 @@ int tt_tracker::trackloop()
                 continue;
               }*/
 
-              trackerEngine.isOK = trackerEngine.tracker->update(in_raw_image_->image, trackerEngine.trackingBox);
+
+              trackerEngine.setIsOK( trackerEngine.tracker->update(in_raw_image_->image, trackerEngine.trackingBox) );
               trackerEngine.centerOfMass = (trackerEngine.trackingBox.br() + trackerEngine.trackingBox.tl())*0.5;
-              trackerEngine.hasData = true;
+              trackerEngine.setHasData( true );
 
               // Calculate Frames per second (FPS)
               trackPerfFps = cv::getTickFrequency() / ((double)cv::getTickCount() - timer);
 
               // Manage isOk
-              if(trackerEngine.isOK)
+              if(trackerEngine.getIsOK())
               {
                   // Get a timestamp
                   trackerEngine.lastIsOkTickCount = timer;
@@ -935,12 +1000,13 @@ int tt_tracker::trackloop()
                 // If we have lost track for x amount of time then re initiate search mode
                 if( (timer - trackerEngine.lastIsOkTickCount) > isOkTimeoutTicks )
                 {
+
                   logger_->debug("^ isOK Out : {}", trackerEngine.name.c_str() );	
                   trackerEngine.setTrackerMode( trackerModeEnum::resetTracker );  
                 }
               } 
                 // Manage isStdDev
-                if(trackerEngine.isInStdDev)
+                if(trackerEngine.getIsInStdDev())
                 {
                     // Get a timestamp
                     trackerEngine.lastInStdDevTickCount = timer;
@@ -960,21 +1026,31 @@ int tt_tracker::trackloop()
 
             case trackerModeEnum::startTracking:
 
-              trackerEngine.trackingBox.x = trackThisBox_.x;
-              trackerEngine.trackingBox.y = trackThisBox_.y;
-              trackerEngine.trackingBox.width = trackThisBox_.width;
-              trackerEngine.trackingBox.height = trackThisBox_.height;
-              trackerEngine.isOK = trackerEngine.tracker->init(in_raw_image_->image, trackerEngine.trackingBox);
+              // A tracker needs an object bounding box, do we use _objectDetectedBox or _compositeTrackerEngine?
+              // for now we use _compositeTrackerEngine if we have confidence in it. We should look into a way 
+              // to refine this
+              if( _compositeTrackerEngine.getIsOK() )
+                CopyRect( _compositeTrackerEngine.trackingBox, trackerEngine.trackingBox );
+              else
+                CopyRect( _objectDetectedBox, trackerEngine.trackingBox );
+
+              //trackerEngine.trackingBox.x = _objectDetectedBox.x;
+              //trackerEngine.trackingBox.y = _objectDetectedBox.y;
+              //trackerEngine.trackingBox.width = _objectDetectedBox.width;
+              //trackerEngine.trackingBox.height = _objectDetectedBox.height;
+
+              //Initislaize the tracking engine, return status 
+              trackerEngine.setIsOK( trackerEngine.tracker->init(in_raw_image_->image, trackerEngine.trackingBox) );
 
               logger_->debug("start tracking : {} - xywh: {:.0f}:{:.0f}:{:.0f}:{:.0f} - ok: {}", 
                 trackerEngine.name.c_str(), 
                 trackerEngine.trackingBox.x, trackerEngine.trackingBox.y, 
                 trackerEngine.trackingBox.width, trackerEngine.trackingBox.height,
-                trackerEngine.isOK );	
+                trackerEngine.getIsOK() );	
 
               trackerEngine.setTrackerMode( trackerModeEnum::tracking );
-              trackerEngine.hasData = false;
-              trackerEngine.isInStdDev = false;
+              trackerEngine.setHasData( false );
+              trackerEngine.setIsInStdDev( false );
                                 
               // init these here so that later tests have a baseline even 
               // if never ok or in stddev
@@ -1086,17 +1162,17 @@ cv::Scalar tt_tracker::GetStatusColor(TrackerEngine& trackerEngine)
 
   if(trackerEngine.index == _currentBestTracker)
     statusColor = cv::Scalar(0,255,0); // green
-  else if(!trackerEngine.hasData)
+  else if(!trackerEngine.getHasData())
   {
     statusColor = cv::Scalar(128,128.128); //gray
     //InfoText = "no data";
   }
-  else if(!trackerEngine.isOK)
+  else if(!trackerEngine.getIsOK())
   {
     statusColor = cv::Scalar(0,0,255); //red
     //InfoText = "bad";
   }
-  else if(!trackerEngine.isInStdDev)
+  else if(!trackerEngine.getIsInStdDev())
   {
     statusColor = cv::Scalar(0,255,255); // yellow
     //InfoText = "out";
@@ -1176,13 +1252,23 @@ int tt_tracker::displayloop()
         break;
 
         case tracking:
-         
-          for( auto &trackerEngine : trackerEngines_)
+
+          if(true)
+          {
+            if (_compositeTrackerEngine.getIsOK())
+            {
+              rectangle(out_image_, _compositeTrackerEngine.trackingBox, cv::Scalar( 255, 0, 0 ), 2, 1 );
+
+              // Draw delta line               
+              line(out_image_, IamgeCOM, _compositeTrackerEngine.centerOfMass, GetStatusColor(_compositeTrackerEngine), 2, 1 );
+            }
+          }
+          else for( auto &trackerEngine : trackerEngines_)
           {
             // Tracking success : Draw the tracked object
             //rectangle(out_image_, trackingBox_, cv::Scalar( 255, 0, 0 ), 2, 1 );
 
-            if (trackerEngine.isOK)
+            if (trackerEngine.getIsOK())
             {
               rectangle(out_image_, trackerEngine.trackingBox, cv::Scalar( 255, 0, 0 ), 2, 1 );
 

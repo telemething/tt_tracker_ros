@@ -79,8 +79,8 @@
 
 namespace tt_tracker_ros 
 {
-// List of tracker algorithms in OpenCV 3.4.1
-enum trackerAlgEnum {algUninit, BOOSTING, MIL, KCF, TLD,MEDIANFLOW, GOTURN, MOSSE, CSRT};
+// List of tracker algorithms in OpenCV 3.4.1 + 'Composite', which is only valid in this app
+enum trackerAlgEnum {algUninit, Composite, BOOSTING, MIL, KCF, TLD,MEDIANFLOW, GOTURN, MOSSE, CSRT};
 enum trackerModeEnum {trackUninit, startTracking, tracking, stopTracking, resetTracker};
 enum searcherModeEnum {searchUninit, startSearching, searching, found};
 
@@ -91,6 +91,9 @@ class TrackerEngine
   trackerModeEnum _trackerMode = trackerModeEnum::trackUninit;
   searcherModeEnum _searcherMode = searcherModeEnum::searchUninit;
   trackerAlgEnum _trackerAlg = trackerAlgEnum::algUninit;
+  bool _isOK = true;
+  bool _isInStdDev = false;
+  bool _hasData = false;
 
  public:
 
@@ -119,17 +122,21 @@ class TrackerEngine
   double lastInStdDevTickCount;
   std::string name  = "-";
 
-  bool isOK = true;
-  bool isInStdDev = false;
-  bool hasData = false;
+  const bool getIsOK() {return _isOK; }
+  bool getIsInStdDev() {return _isInStdDev; }
+  bool getHasData() {return _hasData; }
+
+  void setIsOK( const bool isOK ){ _isOK = isOK; }
+  void setIsInStdDev( const bool isInStdDev ){ _isInStdDev = isInStdDev; }
+  void setHasData( const bool hasData ){ _hasData = hasData; }
 
   trackerModeEnum getTrackerMode() { return _trackerMode; }
   searcherModeEnum getSearcherMode() { return _searcherMode; }
   trackerAlgEnum getTrackerAlg() { return _trackerAlg; };
 
-  void setTrackerMode( trackerModeEnum trackerMode ) { _trackerMode = trackerMode; }
-  void setSearcherMode( searcherModeEnum searcherMode ) { _searcherMode = searcherMode; }
-  void setTrackerAlg( trackerAlgEnum trackerAlg ) { _trackerAlg = trackerAlg; }
+  void setTrackerMode( const trackerModeEnum trackerMode ) { _trackerMode = trackerMode; }
+  void setSearcherMode( const searcherModeEnum searcherMode ) { _searcherMode = searcherMode; }
+  void setTrackerAlg( const trackerAlgEnum trackerAlg ) { _trackerAlg = trackerAlg; }
 
   boost::shared_mutex *mutexCvTracker = nullptr;
 
@@ -137,12 +144,64 @@ class TrackerEngine
   double distance;
 
   static int nextIndex;
+
+  static cv::Ptr<cv::Tracker> CreateTracker(const trackerAlgEnum trackerAlg)
+  {
+    switch(trackerAlg)
+    {
+      case BOOSTING:
+        return cv::TrackerBoosting::create();
+        break;
+      case MIL:
+        return cv::TrackerMIL::create();
+        break;
+      case KCF:
+        return cv::TrackerKCF::create();
+        break;
+      case TLD:
+        return cv::TrackerTLD::create();
+        break;
+      case MEDIANFLOW:
+        return cv::TrackerMedianFlow::create();
+        break;
+      case GOTURN:
+        return cv::TrackerGOTURN::create();
+        break;
+      case MOSSE:
+        return cv::TrackerMOSSE::create();
+        break;
+      case CSRT:
+        return cv::TrackerCSRT::create();
+        break;
+      default:
+        throw std::invalid_argument("Invalid tracker aglorithm");
+        break;
+    }
+  }
+
+  void reset()
+  {
+    tracker.release();
+    setHasData( false );
+    setIsInStdDev( false );
+    setIsOK( true );
+    setTrackerMode( trackerModeEnum::startTracking );
+    setSearcherMode( searcherModeEnum::searchUninit );
+
+    if(getTrackerAlg() != Composite)
+      tracker = CreateTracker(getTrackerAlg());
+  }
 };
 
 //int TrackerEngine::nextIndex = 0;
 
 class tt_tracker
 {
+private:
+
+  void CopyBest( tt_tracker_ros::TrackerEngine &engineIn);
+  void CopyRect( const cv::Rect2d& from, cv::Rect2d& to);
+
  public:
 
   // Print every object detected, very verbose, not for regular use
@@ -170,6 +229,7 @@ class tt_tracker
   std::string searchForClassName_ = "";
   //cv::Ptr<cv::Tracker> tracker_;
   //std::vector<cv::Ptr<cv::Tracker>> trackers_;
+  TrackerEngine _compositeTrackerEngine;
   std::vector<TrackerEngine> trackerEngines_;
   cv_bridge::CvImagePtr in_raw_image_;
   cv::Mat out_image_;
@@ -183,7 +243,7 @@ class tt_tracker
   boost::shared_mutex mutexImageStatus_;
 
   //cv::Rect2d trackingBox_;
-  cv::Rect2d trackThisBox_;
+  cv::Rect2d _objectDetectedBox;
 
   //trackerModeEnum trackerMode_ = trackUninit;
   trackerModeEnum aggregateTrackingMode_ = trackerModeEnum::trackUninit;
@@ -204,6 +264,7 @@ class tt_tracker
   //double lastGoodTrackTickCount_;
   int isOkTimeoutSeconds_ = 1;
   int isInStdDevTimeoutSeconds_ = 3;
+  float isInStdDevDistMult = 6.0;
   int publishTrackingModeloopTimeoutSeconds_ = 1;
   int logloopTimeoutMilliseconds_ = 250;
   geometry_msgs::Vector3Stamped gimbalAngle_;
@@ -233,7 +294,7 @@ class tt_tracker
   int publishTrackingModeloop();
   int displayloop();
   void init();
-  int addTrackerEngine(trackerAlgEnum trackerAlg, std::string name);
+  int addTrackerEngine(const trackerAlgEnum trackerAlg, const std::string name);
   int resetTrackerEngine(TrackerEngine& trackerEngine);
   releativeCoordsStruct findPositionRelativeToImageCenter(const cv::Rect objectRect, const int inageSizeH, const int imageSizeW);
   void startSearchingForObject(const std::string className);
@@ -241,7 +302,7 @@ class tt_tracker
   void darknetBoundingBoxesCallback(const darknet_ros_msgs::BoundingBoxes& bboxMessage);
   void gimbalAngleCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg);
   cv::Scalar GetStatusColor(TrackerEngine& trackerEngine);
-  cv::Ptr<cv::Tracker> CreateTracker(trackerAlgEnum trackerAlg);
+  cv::Ptr<cv::Tracker> CreateTracker(const trackerAlgEnum trackerAlg);
   void CreateLogger();
 };
 
