@@ -197,11 +197,6 @@ class TrackerEngine
 
 class tt_tracker
 {
-private:
-
-  void CopyBest( tt_tracker_ros::TrackerEngine &engineIn);
-  void CopyRect( const cv::Rect2d& from, cv::Rect2d& to);
-
  public:
 
   // Print every object detected, very verbose, not for regular use
@@ -253,6 +248,7 @@ private:
   std::thread trackloop_thread; 
   std::thread publishTrackingModeloop_thread;
   std::thread displayloop_thread;
+  std::thread publishLoop_thread;
 
   float trackPerfFps;
   bool trackerOk;
@@ -282,6 +278,8 @@ private:
   {
     double hPercent;
     double wPercent;
+    double hDeg;
+    double wDeg;
   };
 
   float* _distMatrix;
@@ -291,6 +289,7 @@ private:
   bool readParameters();
   int logloop();
   int trackloop();
+  int publishLoop();
   int publishTrackingModeloop();
   int displayloop();
   void init();
@@ -304,6 +303,16 @@ private:
   cv::Scalar GetStatusColor(TrackerEngine& trackerEngine);
   cv::Ptr<cv::Tracker> CreateTracker(const trackerAlgEnum trackerAlg);
   void CreateLogger();
+
+  private:
+
+  void CopyBest( tt_tracker_ros::TrackerEngine &engineIn);
+  void CopyRect( const cv::Rect2d& from, cv::Rect2d& to);
+  bool _isObjectDetected = false;
+  tt_tracker::releativeCoordsStruct _releativeCoords;
+  float _widthFov = 0;
+  float _heightFov = 0;
+
 };
 
 } /* namespace darknet_ros*/
